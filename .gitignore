@@ -1,0 +1,32 @@
+# ─── Secrets — NEVER commit ───────────────────────────────
+# Real API keys live ONLY in .env (git-ignored) or a systemd
+# EnvironmentFile outside the repo. See .env.example for shape.
+.env
+.env.*
+!.env.example
+deploy/.deployer_pk
+*.pem
+*credentials*.json
+
+# ─── Python ────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ─── Node / frontend ───────────────────────────────────────
+node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/node_modules/
+
+# ─── Deploy artifacts (may embed keys/addresses) ───────────
+deploy/*.json
+
+# ─── OS junk ──────────────────────────────────────────────
+.DS_store
+.DS_Store
+Thumbs.db
