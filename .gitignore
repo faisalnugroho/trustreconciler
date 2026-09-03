@@ -30,3 +30,4 @@ deploy/*.json
 .DS_store
 .DS_Store
 Thumbs.db
+smoke_deployer.json

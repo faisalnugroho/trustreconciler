@@ -1,0 +1,37 @@
+deployer: 0xa25f5a81Fb60b45207f2867346A8E0bAFaA2b836
+faucet: funded deployer
+  [deploy] finalized exec=SUCCESS
+CONTRACT: 0x54cf383f888Ef2cB50B70FA06Fa5042938CcC621
+explorer: https://explorer-studio.genlayer.com/address/0x54cf383f888Ef2cB50B70FA06Fa5042938CcC621
+
+=== S1: Aligned-Trustworthy (eth) ===
+  [S1] finalized exec=SUCCESS
+  -> verdict=Aligned-Trustworthy confidence=High A=15 B=85 divergence=False [53.8s]
+     A: no conservative risk factors found: established age, organic diversity, no flagged contact
+     B: zero contact with phishing-flagged addresses across all 88 counterparties; high counterparty diversity: 88 unique addresses; consistent history: only 
+     R: Trust is warranted because the wallet shows no phishing-flagged contact at all (0 flagged counterparties, 0 flagged funding hits) and its activity looks organic rather than suspicious: 1,301 days of a
+
+=== S2: Divergent (eth, fresh wallet) ===
+  [S2] finalized exec=SUCCESS
+  -> verdict=Divergent-Resolved-Trust confidence=Medium A=55 B=80 divergence=True [62.3s]
+     A: wallet age 3 days < 30 — insufficient history
+     B: zero contact with phishing-flagged addresses across all 6 counterparties; consistent history: only 0% failed txs
+     R: Trust is the better fit for the measured evidence: the wallet has no phishing-flagged counterparty or funding hits, 0% failed transactions, 6 unique counterparties, and no bursty activity, which suppo
+
+=== S3: Undetermined (base, live API failure hunt) ===
+  [S3.1] finalized exec=SUCCESS
+  -> verdict=Undetermined confidence=Low A=-1 B=-1 divergence=False [80.6s]
+     A: not_computed_data_unavailable
+     B: not_computed_data_unavailable
+     R: Fail-safe: reconciliation stopped before any LLM judgment because required data could not be retrieved: txlist:AssertionError('http_500'); tokentx:AssertionError('http_500'). This verdict asserts noth
+S3 live Undetermined ACHIEVED
+
+SUMMARY: {
+ "s1_expected": "Aligned-Trustworthy",
+ "s1_actual": "Aligned-Trustworthy",
+ "s2_expected": "Divergent-Resolved-*",
+ "s2_actual": "Divergent-Resolved-Trust",
+ "s3_expected": "Undetermined (if base API failed during consensus)",
+ "s3_actual": "Undetermined"
+}
+DONE. contract: 0x54cf383f888Ef2cB50B70FA06Fa5042938CcC621

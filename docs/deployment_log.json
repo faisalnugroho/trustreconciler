@@ -1,0 +1,116 @@
+{
+  "wallets": {
+    "s1_aligned": "0x930B88a592a045C428f3d99f7f3E5f95e3967508",
+    "s2_divergent": "0xcF2Ae489e77945F34265FF57393831966E358Db0",
+    "s3_undetermined": "0x51FfD9b1F9c07286074e892d24AdFa7Ac44A33bF"
+  },
+  "deploy": {
+    "tx_hash": "0xe2a40a4f7eb0280f8705e591eb80122d4f8bf08887d965695b392109575a1e4c",
+    "address": "0x54cf383f888Ef2cB50B70FA06Fa5042938CcC621",
+    "deployer": "0xa25f5a81Fb60b45207f2867346A8E0bAFaA2b836"
+  },
+  "s1": {
+    "tx_hash": "0x68f4b9850ed6edc491e198405fd55a7e5e28191bb99634fe05b0ad2b7f1f2e6b",
+    "wallet": "0x930B88a592a045C428f3d99f7f3E5f95e3967508",
+    "chain": "eth",
+    "execution_result": "SUCCESS",
+    "secs": 53.8,
+    "record": {
+      "wallet_address": "0x930B88a592a045C428f3d99f7f3E5f95e3967508",
+      "chain": "eth",
+      "requester": "0xa25f5a81Fb60b45207f2867346A8E0bAFaA2b836",
+      "requested_at": 1788401776,
+      "signal_a_score": 15,
+      "signal_a_reasoning": "no conservative risk factors found: established age, organic diversity, no flagged contact",
+      "signal_b_score": 85,
+      "signal_b_reasoning": "zero contact with phishing-flagged addresses across all 88 counterparties; high counterparty diversity: 88 unique addresses; consistent history: only 0% failed txs",
+      "divergence_detected": false,
+      "final_verdict": "Aligned-Trustworthy",
+      "confidence": "High",
+      "final_reasoning": "Trust is warranted because the wallet shows no phishing-flagged contact at all (0 flagged counterparties, 0 flagged funding hits) and its activity looks organic rather than suspicious: 1,301 days of age, 88 unique counterparties across 100 native and 100 token transactions, 44% diversity, 0% failed transactions, and only a modest burst peak of 8 transactions. The models do not materially diverge here (0-point gap); both are effectively responding to the same clean evidence, and the measured facts support a trusted posture rather than risk.",
+      "data_sources": "blockscout-eth (module=account: txlist, tokentx, balance; Etherscan-compatible keyless public API); forta-network labelled-datasets Fake_Phishing snapshot: https://raw.githubusercontent.com/faisalnugroho/trustreconciler/main/data/phishing_labels.json",
+      "last_updated": 1788401776,
+      "reevaluation_count": 1
+    }
+  },
+  "s2": {
+    "tx_hash": "0xac9cf51b88925ba28ff473f799e25b411a587b3622c8c1ec79774b9905394966",
+    "wallet": "0xcF2Ae489e77945F34265FF57393831966E358Db0",
+    "chain": "eth",
+    "execution_result": "SUCCESS",
+    "secs": 62.3,
+    "record": {
+      "wallet_address": "0xcF2Ae489e77945F34265FF57393831966E358Db0",
+      "chain": "eth",
+      "requester": "0xa25f5a81Fb60b45207f2867346A8E0bAFaA2b836",
+      "requested_at": 1788401830,
+      "signal_a_score": 55,
+      "signal_a_reasoning": "wallet age 3 days < 30 \u2014 insufficient history",
+      "signal_b_score": 80,
+      "signal_b_reasoning": "zero contact with phishing-flagged addresses across all 6 counterparties; consistent history: only 0% failed txs",
+      "divergence_detected": true,
+      "final_verdict": "Divergent-Resolved-Trust",
+      "confidence": "Medium",
+      "final_reasoning": "Trust is the better fit for the measured evidence: the wallet has no phishing-flagged counterparty or funding hits, 0% failed transactions, 6 unique counterparties, and no bursty activity, which supports an organic clean pattern. The root cause of the 35-point divergence is the single measured fact that the wallet is only 3 days old: Model A treats this lack of history as risk by default, while Model B treats the absence of negative evidence as supportive. For this wallet\u2019s actual facts, the youth of the wallet warrants caution but is not, by itself, evidence of malicious behavior, so the clean activity pattern outweighs the age-only concern.",
+      "data_sources": "blockscout-eth (module=account: txlist, tokentx, balance; Etherscan-compatible keyless public API); forta-network labelled-datasets Fake_Phishing snapshot: https://raw.githubusercontent.com/faisalnugroho/trustreconciler/main/data/phishing_labels.json",
+      "last_updated": 1788401830,
+      "reevaluation_count": 1
+    }
+  },
+  "s3_attempt_1": {
+    "tx_hash": "0xf1587a9b9993a1c35a136199bc2e4a62841d470b21a8d69f1f6ab6f903e98db5",
+    "wallet": "0x51FfD9b1F9c07286074e892d24AdFa7Ac44A33bF",
+    "chain": "base",
+    "execution_result": "SUCCESS",
+    "secs": 80.6,
+    "record": {
+      "wallet_address": "0x51FfD9b1F9c07286074e892d24AdFa7Ac44A33bF",
+      "chain": "base",
+      "requester": "0xa25f5a81Fb60b45207f2867346A8E0bAFaA2b836",
+      "requested_at": 1788401892,
+      "signal_a_score": -1,
+      "signal_a_reasoning": "not_computed_data_unavailable",
+      "signal_b_score": -1,
+      "signal_b_reasoning": "not_computed_data_unavailable",
+      "divergence_detected": false,
+      "final_verdict": "Undetermined",
+      "confidence": "Low",
+      "final_reasoning": "Fail-safe: reconciliation stopped before any LLM judgment because required data could not be retrieved: txlist:AssertionError('http_500'); tokentx:AssertionError('http_500'). This verdict asserts nothing about the wallet's trust or risk; re-run once the data source recovers.",
+      "data_sources": "data_unavailable",
+      "last_updated": 1788401892,
+      "reevaluation_count": 1
+    }
+  },
+  "s3": {
+    "tx_hash": "0xf1587a9b9993a1c35a136199bc2e4a62841d470b21a8d69f1f6ab6f903e98db5",
+    "wallet": "0x51FfD9b1F9c07286074e892d24AdFa7Ac44A33bF",
+    "chain": "base",
+    "execution_result": "SUCCESS",
+    "secs": 80.6,
+    "record": {
+      "wallet_address": "0x51FfD9b1F9c07286074e892d24AdFa7Ac44A33bF",
+      "chain": "base",
+      "requester": "0xa25f5a81Fb60b45207f2867346A8E0bAFaA2b836",
+      "requested_at": 1788401892,
+      "signal_a_score": -1,
+      "signal_a_reasoning": "not_computed_data_unavailable",
+      "signal_b_score": -1,
+      "signal_b_reasoning": "not_computed_data_unavailable",
+      "divergence_detected": false,
+      "final_verdict": "Undetermined",
+      "confidence": "Low",
+      "final_reasoning": "Fail-safe: reconciliation stopped before any LLM judgment because required data could not be retrieved: txlist:AssertionError('http_500'); tokentx:AssertionError('http_500'). This verdict asserts nothing about the wallet's trust or risk; re-run once the data source recovers.",
+      "data_sources": "data_unavailable",
+      "last_updated": 1788401892,
+      "reevaluation_count": 1
+    }
+  },
+  "summary": {
+    "s1_expected": "Aligned-Trustworthy",
+    "s1_actual": "Aligned-Trustworthy",
+    "s2_expected": "Divergent-Resolved-*",
+    "s2_actual": "Divergent-Resolved-Trust",
+    "s3_expected": "Undetermined (if base API failed during consensus)",
+    "s3_actual": "Undetermined"
+  }
+}
