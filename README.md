@@ -61,8 +61,11 @@ and this project does not aggregate those commercial APIs.
 
 ## Status
 
-Build in progress — **STOP 1 complete** (contract + 32/32 direct-mode
-tests passing, genvm-lint ok). Studionet deployment and frontend follow.
+Deployed and live:
+
+- **Contract (Studionet):** [0x54cf383f888Ef2cB50B70FA06Fa5042938CcC621](https://explorer-studio.genlayer.com/address/0x54cf383f888Ef2cB50B70FA06Fa5042938CcC621) — 32/32 direct-mode tests, genvm-lint ok, 3/3 live consensus smoke scenarios (`docs/deployment_log.json`).
+- **dApp (GitHub Pages):** [faisalnugroho.github.io/trustreconciler](https://faisalnugroho.github.io/trustreconciler/)
+- **Submission draft:** `docs/SUBMISSION_DRAFT.md`
 
 ## Secret handling
 
