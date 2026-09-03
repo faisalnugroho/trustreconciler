@@ -73,6 +73,33 @@ Local development uses a git-ignored `.env` file at the repo root (see
 `.env.example`); systemd services use a separate root-owned
 `EnvironmentFile=` outside the repo.
 
+## Known limitations
+
+- **Blockscout address-history coverage (verified live 2026-09-03):** the
+  public `eth.blockscout.com` instance used by the contract does not return
+  full address history for every wallet. Several long-established addresses
+  (e.g. `0xd8dA...c0Ab`, Binance hot wallets, 1inch router) return
+  "No transactions found" and `null` balances, while recent/active addresses
+  return complete history. Chain-level data (blocks, recent transactions) is
+  live and consistent with Ethereum mainnet. Consequences: (a) Signal A's
+  wallet-age metric is computed from the oldest transaction *visible on the
+  instance* — for wallets with a coverage gap this underestimates true age;
+  (b) a genuinely old wallet may be scored as if it were fresh. Mitigation:
+  this is a data-source limitation, not a logic failure — the contract
+  honestly scores the data it can verifiably fetch, and the reasoning fields
+  always state which evidence the scores were computed from. Smoke tests
+  use wallets whose history was manually verified to be present on the same
+  instance.
+- **First-100-transaction window:** the contract fetches the first 100
+  native + 100 token transfers (`sort=asc`) to keep validator fetches
+  comparable and payloads bounded. For very high-volume wallets this is a
+  sample, not the full history; signals are computed on that sample and
+  the record states the window size.
+- **Phishing labels are a snapshot:** the Fake_Phishing set is synced
+  periodically from the public forta-network labelled-datasets repository;
+  addresses newly flagged after the last sync are unknown to the contract
+  until the next sync.
+
 ## Repository layout
 
     contracts/   GenLayer Intelligent Contract (Signal A/B + LLM arbiter)
