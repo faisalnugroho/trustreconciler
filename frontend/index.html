@@ -449,6 +449,20 @@ function esc(s){ return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt
 
 function pinPos(score){ return Math.max(1, Math.min(99, Number(score) || 0)) + '%'; }
 
+/* EIP-55 normalization: wallet addresses get pasted lowercase from
+   Etherscan/wallet apps all the time; the contract validates the checksum
+   strictly. Normalize client-side (viem getChecksumAddress, exported from
+   the SDK bundle) so users never have to think about checksums.
+   - valid 40-hex (any casing) -> checksummed form
+   - already-checksummed input -> same value (idempotent)
+   - anything else -> null (rejected with a clear message) */
+function normalizeAddress(raw){
+  let a = String(raw || '').trim();
+  if (/^0X[0-9a-fA-F]{40}$/.test(a)) a = '0x' + a.slice(2);  // accept 0X prefix
+  if (!/^0x[0-9a-fA-F]{40}$/.test(a)) return null;
+  try { return SDK.getChecksumAddress(a); } catch { return null; }
+}
+
 function renderRecord(rec, wallet){
   currentRecord = rec;
   currentWallet = wallet;
@@ -524,9 +538,11 @@ setInterval(() => { if (currentRecord) updateRecheckState(currentRecord); }, 300
 
 /* ---------- actions ---------- */
 async function doReconcile(){
-  const w = $('wallet-input').value.trim();
+  const raw = $('wallet-input').value.trim();
   const chain = $('chain-select').value;
-  if (!/^0x[0-9a-fA-F]{40}$/.test(w)) return toast('Enter a valid 0x… 20-byte address', true);
+  const w = normalizeAddress(raw);
+  if (!w) return toast('Enter a valid 0x… 20-byte address', true);
+  if (w !== raw) $('wallet-input').value = w;  // show the normalized form
   if (busy) return;
   busy = true;
   $('btn-reconcile').disabled = true;
