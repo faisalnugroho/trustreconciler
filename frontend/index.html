@@ -683,6 +683,8 @@ async function doRecheck(){
 
     setStatus('busy', 'Requesting re-evaluation on chain <b>' + esc(recChain) +
       '</b> (derived from the stored record, not the selector)…');
+    console.info('[recheck] chain sent to request_reevaluation = ' + recChain +
+      ' (derived from stored record; UI selector was ' + $('chain-select').value + ')');
     const { txHash } = await sendWrite('request_reevaluation', [currentWallet, recChain], 're-evaluation');
 
     // STEWARD ROUND-2 FIX 2: no optimistic success. After FINALIZED, we
@@ -706,6 +708,9 @@ async function doRecheck(){
       (Number(after.reevaluation_count) !== Number(before.reevaluation_count) ||
        Number(after.last_updated) !== Number(before.last_updated));
     if (!mutated){
+      console.warn('[recheck] ANOMALY: tx ' + txHash + ' FINALIZED but record unchanged ' +
+        '(last_updated ' + before.last_updated + '→' + (after ? after.last_updated : '?') +
+        ', re-evals ' + before.reevaluation_count + '→' + (after ? after.reevaluation_count : '?') + ')');
       setStatus('err', '⚠ Anomaly: tx <a href="' + EXPLORER_TX + txHash + '" target="_blank" rel="noopener">' +
         txHash.slice(0, 18) + '…</a> finalized but the stored record did NOT change ' +
         '(last_updated ' + before.last_updated + '→' + (after ? after.last_updated : '?') +
@@ -716,6 +721,9 @@ async function doRecheck(){
       return;
     }
     renderRecord(after, currentWallet);
+    console.info('[recheck] SUCCESS VERIFIED on chain — tx ' + txHash +
+      ' FINALIZED; before {last_updated:' + before.last_updated + ', reevals:' + before.reevaluation_count + '}' +
+      ' → after {last_updated:' + after.last_updated + ', reevals:' + after.reevaluation_count + '}');
     setStatus(null);
     toast('Re-evaluation committed — record verified changed on chain (tx ' + txHash.slice(0, 12) + '…)');
   } catch (e){
