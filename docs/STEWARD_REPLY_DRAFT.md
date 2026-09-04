@@ -1,4 +1,66 @@
-# Draft balasan ke steward (TrustReconciler — "Action needed")
+# Draft balasan ke steward (TrustReconciler — round 2, frontend fixes)
+
+Round 1 (contract-side: chain pinning, cooldown, dataset) — accepted.
+Round 2 items (both frontend) — fixed, tested, proven live below.
+
+---
+
+Thank you — both remaining frontend bugs are fixed, regression-tested
+(12 new source-level tests), and proven with live consensus runs on the
+production dApp.
+
+## 1. Re-evaluation chain is now derived from the record, not the UI
+
+`doRecheck()` never reads the chain selector. Right before sending, it
+re-reads the on-chain record via `get_reconciliation` and sends that
+record's pinned `chain` to `request_reevaluation`. The selector value is
+ignored entirely on this path; if the record carries no chain the UI
+refuses to send rather than guess.
+
+Live proof — the exact scenario you asked for: opened the Base record
+(S3 `0x51FfD9b1…33bF`), set the selector to eth, clicked Re-check.
+The transaction still sent chain=base, provable from the tx calldata
+itself:
+
+- tx 0x720a025521e9bb504ef86cd2324432c56bb365ac2ce9e80f5098b076d5fac4be
+  (FINALIZED, exec SUCCESS) — calldata:
+  {"method":"request_reevaluation","args":["0x51FfD9b1…33bF","base"]}
+- dApp console: `[recheck] chain sent to request_reevaluation = base
+  (derived from stored record; UI selector was eth)`
+- screenshots: selector visibly on "eth (mainnet)" while the verdict
+  panel shows "chain base" (artifacts/live_s1_selector_sabotaged_eth.png),
+  and the post-run state with the record mutated re-evals 2→3
+  (artifacts/live_s1_final.png) — base API was rate-limited (http_429)
+  during this run, so the record honestly went Undetermined again;
+  the chain and mutation behavior are what matter here.
+
+## 2. Success state now requires verified before/after, not optimism
+
+The tx lifecycle waits for FINALIZED (was ACCEPTED). On a receipt-wait
+timeout it polls the actual receipt until FINALIZED or a terminal
+non-final status — the old optimistic state-probe (`return true`) is
+deleted. After FINALIZED, the UI re-reads the record and only shows
+success when `last_updated` or `reevaluation_count` actually moved
+versus the snapshot taken before the tx was sent; a finalized tx with
+an unchanged record renders as an explicit anomaly error with the
+before/after values — never success.
+
+Live proof (normal path, S1 `0x930B88…7508` eth):
+tx 0xc2c360338c01b2e7c41c0e67b40fc1a7d7ba15f15011a35689b438b014c3c0ec
+(FINALIZED, exec SUCCESS). The console shows the comparison the UI ran
+before showing success:
+`[recheck] SUCCESS VERIFIED on chain — before {last_updated:1788489860,
+reevals:2} → after {last_updated:1788550179, reevals:3}` — independently
+confirmed via read_contract (artifacts/live_round2_s2_proof.json).
+
+Both proofs are documented in SUBMISSION_DRAFT.md ("Steward round-2
+frontend fixes") with all tx links, screenshots, and JSON evidence in
+the repo. Full suite: 72/72 (60 contract + 12 frontend regression).
+
+---
+
+# (round 1 below — kept for reference)
+
 
 Konteks: 4 poin "Action needed" dari review. Semua sudah diperbaiki,
 di-test, dan dideploy ulang. Kontrak baru (v2):
