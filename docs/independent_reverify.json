@@ -1,0 +1,112 @@
+{
+ "contract": "0x3c639D84c6B1463eaFE91EA0A2Db8d767e742c2B",
+ "pin": {
+  "commit_sha": "53246b6bb348b41b4336657dd9ae1eaf8dfc43d5",
+  "keccak256": "ee0076523ad355d5289b55757f61e1a7e555a4b0f952f305e9ddd8f36100fec7",
+  "url": "https://raw.githubusercontent.com/faisalnugroho/trustreconciler/53246b6bb348b41b4336657dd9ae1eaf8dfc43d5/data/phishing_labels.json",
+  "ref": "53246b6bb348:ee0076523ad355d5"
+ },
+ "dataset_hash_check": {
+  "fetched_url": "https://raw.githubusercontent.com/faisalnugroho/trustreconciler/53246b6bb348b41b4336657dd9ae1eaf8dfc43d5/data/phishing_labels.json",
+  "http_status": 200,
+  "bytes": 276013,
+  "manual_keccak256_now": "ee0076523ad355d5289b55757f61e1a7e555a4b0f952f305e9ddd8f36100fec7",
+  "pinned_keccak256_constructor": "ee0076523ad355d5289b55757f61e1a7e555a4b0f952f305e9ddd8f36100fec7",
+  "identical": true
+ },
+ "A_before_s1": {
+  "final_verdict": "Aligned-Trustworthy",
+  "chain": "eth",
+  "last_updated": 1788489860,
+  "reevaluation_count": 2,
+  "dataset_ref": "53246b6bb348:ee0076523ad355d5",
+  "history_coverage": "partial_window"
+ },
+ "A": {
+  "attempt": {
+   "tx": "0xe619a57a1bb9f05890f32cf221b24c26dabe5537d4f248a945531cb2038825f1",
+   "exec": "ERROR",
+   "stderr_tail": "{}))\n            ~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/contract.py\", line 884, in request_reevaluation\n    raise AssertionError(\"chain_mismatch:pinned_to:\" + prev.chain)\nAssertionError: chain_mismatch:pinned_to:eth\n",
+   "label": "A chain-mismatch"
+  },
+  "after": {
+   "final_verdict": "Aligned-Trustworthy",
+   "chain": "eth",
+   "last_updated": 1788489860,
+   "reevaluation_count": 2,
+   "dataset_ref": "53246b6bb348:ee0076523ad355d5",
+   "history_coverage": "partial_window"
+  },
+  "record_untouched": true
+ },
+ "B_before_s3": {
+  "final_verdict": "Undetermined",
+  "chain": "base",
+  "last_updated": 1788486373,
+  "reevaluation_count": 1,
+  "dataset_ref": "53246b6bb348:ee0076523ad355d5",
+  "history_coverage": "unavailable"
+ },
+ "C": {
+  "before": {
+   "final_verdict": "Undetermined",
+   "chain": "base",
+   "last_updated": 1788486373,
+   "reevaluation_count": 1,
+   "dataset_ref": "53246b6bb348:ee0076523ad355d5",
+   "history_coverage": "unavailable"
+  },
+  "attempt": {
+   "tx": "0xbeea038461223dfd28083596e0a26951ad4616d6c077518d526291d567848400",
+   "exec": "SUCCESS",
+   "stderr_tail": "/py/libs/genlayer/gl/_internal/storage.py:21: UserWarning: Detected pickling storage class. Reading storage in nondet mode is not supported\n  warnings.warn(\n",
+   "label": "C post-cooldown re-eval"
+  },
+  "after": {
+   "wallet_address": "0x51FfD9b1F9c07286074e892d24AdFa7Ac44A33bF",
+   "chain": "base",
+   "requester": "0xa25f5a81Fb60b45207f2867346A8E0bAFaA2b836",
+   "requested_at": 1788491903,
+   "signal_a_score": -1,
+   "signal_a_reasoning": "not_computed_data_unavailable",
+   "signal_b_score": -1,
+   "signal_b_reasoning": "not_computed_data_unavailable",
+   "divergence_detected": false,
+   "final_verdict": "Undetermined",
+   "confidence": "Low",
+   "final_reasoning": "Fail-safe: reconciliation stopped before any LLM judgment because required data could not be retrieved: txlist:AssertionError('http_500'). This verdict asserts nothing about the wallet's trust or risk; re-run once the data source recovers. Note: the same 1-hour anti-spam cooldown applies to this Undetermined record \u2014 a failed run is a full consensus run, so it gets no bypass window.",
+   "data_sources": "data_unavailable",
+   "dataset_ref": "53246b6bb348:ee0076523ad355d5",
+   "history_coverage": "unavailable",
+   "last_updated": 1788491903,
+   "reevaluation_count": 2
+  },
+  "count_incremented": true,
+  "last_updated_bumped": true
+ },
+ "B": {
+  "undetermined_record": {
+   "final_verdict": "Undetermined",
+   "chain": "base",
+   "last_updated": 1788491903,
+   "reevaluation_count": 2,
+   "dataset_ref": "53246b6bb348:ee0076523ad355d5",
+   "history_coverage": "unavailable"
+  },
+  "attempt": {
+   "tx": "0xb439ff05227039bd4a8ff2036acffeaa6522c74315189a6d5d2209a1d73926c5",
+   "exec": "ERROR",
+   "stderr_tail": "^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/contract.py\", line 887, in request_reevaluation\n    raise AssertionError(\"cooldown_active:\"\n                       + str(REEVAL_COOLDOWN_SECONDS - elapsed))\nAssertionError: cooldown_active:3530\n",
+   "label": "B undetermined-inside-cooldown"
+  },
+  "after": {
+   "final_verdict": "Undetermined",
+   "chain": "base",
+   "last_updated": 1788491903,
+   "reevaluation_count": 2,
+   "dataset_ref": "53246b6bb348:ee0076523ad355d5",
+   "history_coverage": "unavailable"
+  },
+  "count_unchanged": true
+ }
+}
