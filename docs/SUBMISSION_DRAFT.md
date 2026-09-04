@@ -280,5 +280,90 @@ Same structure as prior accepted Projects submissions (VeriBid,
 SecondHandCarInspectionEscrow): one repo combining contract + tests +
 frontend + deployment evidence, a working live deployment on Studionet
 with real consensus transactions, and an honest README documenting data
-sources and limitations — now hardened per the steward's four review
-items with live on-chain proofs.
+sources and limitations — now hardened per the steward's review items
+with live on-chain proofs.
+
+---
+
+## Steward round-2 frontend fixes (Sep 2026 — both remaining bugs)
+
+The contract-side items (chain pinning, cooldown, dataset) were
+accepted; the two remaining bugs were purely frontend and are fixed,
+tested, and proven live below.
+
+### Fix 1 — Re-evaluation chain is derived from the stored record
+
+`doRecheck()` no longer reads the chain selector at all. Immediately
+before sending the transaction it re-reads the on-chain record
+(`get_reconciliation`) and sends THAT record's pinned `chain` field to
+`request_reevaluation`. The selector's value is ignored entirely on this
+path; if the record somehow carries no chain, the UI refuses to send
+anything rather than guess. The read-only "View stored record" button
+additionally syncs the selector to the pinned chain so the UI never
+sits in a state that contradicts the stored record.
+
+**Live proof (production dApp, real consensus tx):** the S3 wallet
+(pinned to `base`) was displayed via "View stored record", the chain
+selector was deliberately set to `eth`, and Re-check was clicked. The
+transaction sent `chain=base` — derived from the record, not the
+selector:
+- dApp console evidence line: `[recheck] chain sent to
+  request_reevaluation = base (derived from stored record; UI selector
+  was eth)`
+- tx: https://explorer-studio.genlayer.com/tx/0x720a025521e9bb504ef86cd2324432c56bb365ac2ce9e80f5098b076d5fac4be
+- screenshots: `artifacts/live_s1_selector_sabotaged_eth.png` (selector
+  on eth, record on base, re-eval in flight) and
+  `artifacts/live_s1_final.png` (post-tx state).
+
+### Fix 2 — Success only after FINALIZED + verified record mutation
+
+The transaction lifecycle was rebuilt end to end:
+
+1. `sendWrite()` now waits for **FINALIZED** (was ACCEPTED). If the
+   receipt wait times out, a recovery loop polls the actual receipt
+   until it is FINALIZED or ends in a terminal non-final status
+   (UNDETERMINED / CANCELED / *_TIMEOUT) — never an optimistic
+   success from a state probe (the old optimistic probe is deleted).
+2. After FINALIZED, `doRecheck()` re-reads the record via
+   `get_reconciliation` and requires **proof of mutation** before any
+   success state: `last_updated` or `reevaluation_count` must differ
+   from the values snapshotted before the transaction was sent.
+3. If the tx finalized but the record did NOT change, the UI shows an
+   explicit **anomaly** error (with before/after values and the tx
+   link) — not success. The success toast only fires after the
+   verified mutation, and a console evidence line prints the exact
+   before/after comparison.
+
+**Live proof:** two independent runs, both on the production dApp:
+
+- Scenario 1 (sabotaged selector): the S3 wallet record (pinned to
+  `base`) was displayed via "View stored record", the chain selector
+  was deliberately set to `eth`, and Re-check was clicked. The
+  transaction sent `chain=base` — the tx calldata itself proves it:
+  `{"method":"request_reevaluation","args":["0x51FfD9b1…33bF","base"]}`
+  — tx
+  [`0x720a0255…fac4be`](https://explorer-studio.genlayer.com/tx/0x720a025521e9bb504ef86cd2324432c56bb365ac2ce9e80f5098b076d5fac4be)
+  (FINALIZED, exec SUCCESS), record mutated re-evals 2→3.
+  Console line: `[recheck] chain sent to request_reevaluation = base
+  (derived from stored record; UI selector was eth)`.
+- Scenario 2 (normal path): the S1 wallet (pinned `eth`) re-checked
+  with a matching selector — tx
+  [`0xc2c36033…c3c0ec`](https://explorer-studio.genlayer.com/tx/0xc2c360338c01b2e7c41c0e67b40fc1a7d7ba15f15011a35689b438b014c3c0ec)
+  (FINALIZED, exec SUCCESS). The UI printed the exact before/after
+  comparison it performed BEFORE showing success:
+  `[recheck] SUCCESS VERIFIED on chain — before {last_updated:1788489860,
+  reevals:2} → after {last_updated:1788550179, reevals:3}` — and the
+  same values were confirmed independently off-band via
+  `genlayer_py read_contract` (`artifacts/live_round2_proof.json`,
+  `artifacts/live_round2_s2_proof.json`; screenshots in
+  `artifacts/live_s1_*.png`, `artifacts/live_s2_*.png`).
+
+### Regression lock
+
+12 new source-level frontend tests
+(`tests/test_frontend_source.py`) pin both fixes: the single
+`request_reevaluation` call site must pass the record-derived chain;
+the before-read must happen before the tx; FINALIZED (not ACCEPTED)
+wait; verified-mutation comparison strings; anomaly branch must not
+show success; no optimistic state probe. Full suite: **72/72 pass**
+(60 contract + 12 frontend).

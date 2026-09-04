@@ -1,0 +1,12 @@
+{
+ "tx": "0xc2c360338c01b2e7c41c0e67b40fc1a7d7ba15f15011a35689b438b014c3c0ec",
+ "tx_status": 7,
+ "exec_result": "SUCCESS",
+ "calldata": null,
+ "after_record": {
+  "final_verdict": "Aligned-Trustworthy",
+  "chain": "eth",
+  "reevaluation_count": 3,
+  "last_updated": 1788550179
+ }
+}
