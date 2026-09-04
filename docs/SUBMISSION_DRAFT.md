@@ -1,10 +1,10 @@
 # TrustReconciler — Builder Portal Submission Draft (Projects track)
 
 **Category:** Projects
-**Status:** ready for manual portal submission by Fai
+**Status:** steward "Action needed" items fixed (Sep 2026) — awaiting Fai's resubmit
 **Repo:** https://github.com/faisalnugroho/trustreconciler
 **Live dApp:** https://faisalnugroho.github.io/trustreconciler/
-**Contract (Studionet):** https://explorer-studio.genlayer.com/address/0x54cf383f888Ef2cB50B70FA06Fa5042938CcC621
+**Contract (Studionet, v2 — post-fix redeploy):** https://explorer-studio.genlayer.com/address/0x3c639D84c6B1463eaFE91EA0A2Db8d767e742c2B
 
 ---
 
@@ -50,41 +50,148 @@ Verdict family: `Aligned-Trustworthy`, `Aligned-Risky`,
 `Divergent-Resolved-Trust`, `Divergent-Resolved-Risk`, `Undetermined`.
 
 Fail-safe: if ANY data fetch fails (HTTP error, rate-limit, malformed
-payload, empty label dataset), the run stops **before any LLM judgment** and
-commits `Undetermined` with an explanation of exactly which fetch failed.
+payload, empty label dataset), the run stops **before any LLM judgment**
+and commits `Undetermined` with an explanation of exactly which fetch failed.
 Partial data never reaches arbitration.
+
+## Steward review fixes (Sep 2026 — all four "Action needed" items)
+
+### 1. Re-evaluation preserves the chain of the original record
+
+A wallet's record is now permanently **pinned to the chain of its first
+reconciliation**. Both entrypoints reject a different chain with an
+explicit error BEFORE the non-deterministic block:
+
+- `request_reevaluation(eth-wallet, "base")` → reverts
+  `chain_mismatch:pinned_to:eth`
+- a renewed `request_reconciliation` on a known wallet with a different
+  chain → same explicit revert; the existing record is never overwritten.
+
+**Live proof (real consensus tx, new contract):**
+[`0x1d5502681b86a38151b53c6df7ae6c6d119c288cc8bb02033ba7c55bf0a38af9`](https://explorer-studio.genlayer.com/tx/0x1d5502681b86a38151b53c6df7ae6c6d119c288cc8bb02033ba7c55bf0a38af9)
+— attempted re-evaluation of the eth-pinned S1 wallet with `chain=base`;
+the leader stderr shows the contract revert
+`AssertionError: chain_mismatch:pinned_to:eth` and the stored record is
+untouched (still chain=eth, re-evals=1). `get_cooldown_info` now also
+exposes the pinned chain, and the dApp locks the chain selector
+client-side to avoid a guaranteed-to-revert consensus round.
+Regression tests: `TestStewardFixChainPinning` (6 tests).
+
+### 2. Stored record provably changes after cooldown + re-eval
+
+Re-evaluations are asserted NON-NO-OP in three layers
+(`TestStewardFixRecordMutation`):
+
+- `last_updated` and `requested_at` strictly bump;
+- `reevaluation_count` strictly increments;
+- when the new data differs from the old, at least one substantive field
+  (signal score / final verdict / signal reasoning / final reasoning)
+  must change — and the change is asserted against the record **committed
+  to storage** (read back via `get_reconciliation`), not just the tx
+  return value.
+
+Covered cases: success mutation (flagged-funder wallet → clean wallet:
+Aligned-Risky → Aligned-Trustworthy with score change) AND fail-safe
+mutation (API down on re-eval → record concretely changes to
+Undetermined). Live on-chain proof: `docs/live_mutation_proof.json`
+(before/after records of a real post-cooldown re-evaluation of the S1
+smoke wallet on the new contract, with all checks true) — see also the S3
+smoke tx where a failed fetch concretely overwrote the prior record state
+(reevaluation_count incremented on-chain).
+
+### 3. Cooldown uniform for ALL verdicts, including Undetermined
+
+On-chain, the cooldown was already verdict-agnostic (both entrypoints
+guard on the same `last_updated`); the real bypass was in the **dApp UI**,
+which enabled the "Re-check" button immediately on Undetermined records,
+inviting guaranteed-to-revert consensus rounds. The bypass is **removed**:
+the UI now applies the same countdown to Undetermined as every other
+verdict, and the Undetermined record's own reasoning text now states the
+cooldown applies to it. Contract-side uniformity is explicitly
+regression-tested (`TestStewardFixUndeterminedCooldown`, 3 tests:
+re-eval and re-request inside cooldown both revert; retry only succeeds
+after the full window, at which point the record concretely changes).
+
+### 4. Dataset pinned to an immutable commit + partial-history honesty
+
+**Pinning (three layers):**
+
+- **URL immutability** — the contract fetches the label dataset from
+  `raw.githubusercontent.com/faisalnugroho/trustreconciler/<40-hex-COMMIT-SHA>/data/phishing_labels.json`.
+  The commit SHA is a **constructor argument**; moving refs
+  (`main`/`HEAD`/`master`/short-sha) are **rejected at construction**
+  (`invalid_dataset_commit_sha:must_be_40_hex_commit_not_moving_ref`) —
+  there is no "fetch latest" path in the contract at all.
+- **Content verification** — the deployer also passes the expected
+  **keccak256 of the dataset bytes**; the leader AND every validator
+  recompute the hash over the fetched bytes each run. A moved/replaced/
+  tampered dataset fails the run explicitly
+  (`dataset_hash_mismatch` → `Undetermined`), never silently changing
+  verdicts.
+- **Auditable record** — every stored record embeds
+  `dataset_ref = "<commit12>:<keccak16>"`; the active pin is readable
+  on-chain via the new `get_dataset_pin()` view.
+
+Active production pin (verified live on-chain):
+commit `53246b6bb348b41b4336657dd9ae1eaf8dfc43d5`, keccak256
+`ee0076523ad355d5289b55757f61e1a7e555a4b0f952f305e9ddd8f36100fec7`,
+ref `53246b6bb348b:ee0076523ad355d5` — every live record on the new
+contract carries it.
+
+**Partial-history honesty:**
+
+- Every record carries a machine-readable `history_coverage` field:
+  `full_window` | `partial_window` (fetch page cap hit — bounded sample,
+  not full history) | `no_visible_history` (mirror coverage gap — absence
+  of data proves nothing about true wallet age/activity).
+- BOTH signal reasonings append an explicit "LIMITED DATA" clause on
+  partial/empty windows (e.g. "verdict based on the first 100 txs only";
+  "zero flagged contact verified within the first 100-tx window only";
+  "absence of data is NOT proof of a new or inactive wallet").
+- The arbitration prompt carries the same DATA WINDOW CAVEAT, and the
+  arbiter output is **validated**: on a partial window the final
+  reasoning MUST acknowledge partial data — a full-history-sounding
+  verdict is rejected (`partial_data_ack_missing` → `Undetermined`).
+- The dApp displays the coverage classification and dataset ref on
+  every verdict.
+
+Regression tests: `TestStewardFixDatasetPinning` (11 tests, incl.
+constructor rejections of `main`/`HEAD`/`master`/short/empty pins and
+the hash-mismatch fail-safe) + `TestStewardFixPartialHistoryHonesty`
+(4 tests, incl. the LLM-acknowledgment gate).
 
 ## Evidence
 
 - **Repository:** https://github.com/faisalnugroho/trustreconciler
-- **Contract (Studionet explorer):**
-  https://explorer-studio.genlayer.com/address/0x54cf383f888Ef2cB50B70FA06Fa5042938CcC621
+- **Contract v2 (Studionet explorer, post-fix redeploy):**
+  https://explorer-studio.genlayer.com/address/0x3c639D84c6B1463eaFE91EA0A2Db8d767e742c2B
 - **Live dApp (GitHub Pages):** https://faisalnugroho.github.io/trustreconciler/
-- **Tests:** 32/32 gltest direct-mode tests pass
-  (`module=account` fetch pipeline, input validation, cooldown/re-eval,
-  LLM hardening, data-failure fail-safe, dataset poisoning, Base chain).
-  `genvm-lint check --json` → ok (22 W004 bare-assertion warnings — the
-  established GenLayer revert pattern, fewer than prior accepted submissions).
+- **Tests:** 60/60 gltest direct-mode tests pass (was 32; +28 covering the
+  four steward fixes) — chain pinning, record-mutation proofs, Undetermined
+  cooldown uniformity, dataset pinning (constructor rejections +
+  content-hash fail-safe + audit ref) and partial-history honesty.
+  `genvm-lint check --json` → `validate.ok: true` (3 view + 2 write
+  methods, 2 constructor params).
 
 ### Live smoke-test transactions (Studionet, real consensus — not mocks)
 
-All three scenarios use **real mainnet wallet addresses** whose history was
+All scenarios use **real mainnet wallet addresses** whose history was
 manually verified on the same Blockscout instance the contract fetches from
 (exact contract fetch window: first-100 `sort=asc`, txlist + tokentx).
 
 | # | Scenario | Wallet | Tx | Live result |
 |---|----------|--------|----|-------------|
-| S1 | Established clean wallet (≈3.5 yr history, 88 unique counterparties, 0 flagged contact) | `0x930B88…7508` | [`0x68f4b985…f1f2e6b`](https://explorer-studio.genlayer.com/tx/0x68f4b9850ed6edc491e198405fd55a7e5e28191bb99634fe05b0ad2b7f1f2e6b) | `Aligned-Trustworthy`, confidence High, A=15 / B=85, 53.8 s |
-| S2 | **Fresh wallet (3 days old, 6 clean counterparties) — the core divergence case** | `0xcF2Ae4…Db0` | [`0xac9cf51b…394966`](https://explorer-studio.genlayer.com/tx/0xac9cf51b88925ba28ff473f799e25b411a587b3622c8c1ec79774b9905394966) | `Divergent-Resolved-Trust`, confidence Medium, A=55 / B=80, divergence=True, 62.3 s — arbiter reasoning explicitly resolves Signal A's "insufficient history" penalty vs Signal B's "no negative evidence" trust |
-| S3 | **Live API failure** (base.blockscout txlist/tokentx returned genuine HTTP 500 during consensus) | `0x51FfD9…33bF` (chain=base) | [`0xf1587a9b…e98db5`](https://explorer-studio.genlayer.com/tx/0xf1587a9b9993a1c35a136199bc2e4a62841d470b21a8d69f1f6ab6f903e98db5) | `Undetermined`, confidence Low, fail-safe fired BEFORE LLM judgment: *"reconciliation stopped before any LLM judgment because required data could not be retrieved: txlist:AssertionError('http_500'); tokentx:AssertionError('http_500')"* — 80.6 s |
+| S1 | Established clean wallet (age ~3.6 yr, 88 unique counterparties, 0 flagged contact) | `0x930B88…7508` | [`0x2be624…c516`](https://explorer-studio.genlayer.com/tx/0x2be62413cc0c4f9ce401d6f8d838506bfb064f2e52330cc30d0b44338f52c516) | `Aligned-Trustworthy`, A=15 / B=85, 75.5 s — record honestly flagged `history_coverage=partial_window` (≥100 txs) with LIMITED-DATA clauses in both signal reasonings and the arbiter reasoning acknowledging the limited window |
+| S2 | **Fresh wallet (4 days old, 6 clean counterparties) — the core divergence case** | `0xcF2Ae4…Db0` | [`0xb5c183…7b6`](https://explorer-studio.genlayer.com/tx/0xb5c1833b170ccc73e3568f6adcaad39ebd67e88e188fc26c36d0c5388f7317b6) | `Divergent-Resolved-Trust`, confidence Medium, A=55 / B=80, divergence=True, 106.1 s — arbiter reasoning names the root cause: "the wallet is only 4 days old: Model A treats this lack of history itself as risk, while Model B relies on the observed clean activity" |
+| S3 | **Live API failure** (base.blockscout returned genuine HTTP 500 during consensus) | `0x51FfD9…33bF` (chain=base) | [`0xcc7ce0…72ef`](https://explorer-studio.genlayer.com/tx/0xcc7ce0a7fab4f40241e070f5cedcad196a6b3307843f5702620ea7acfcd472ef) | `Undetermined`, fail-safe fired BEFORE LLM judgment: *"reconciliation stopped before any LLM judgment because required data could not be retrieved: txlist:AssertionError('http_500'); tokentx:AssertionError('http_500')"*, 60.8 s — record carries the dataset_ref even on failure |
 
 S3 is a genuine network failure caught during the run, not a staged one —
-base.blockscout's account-txlist endpoint was intermittently returning
-HTTP 500 on that address (documented in
-`docs/deployment_log.json` and `docs/smoke_console.log`).
+base.blockscout's account-txlist endpoint was returning HTTP 500 on that
+address during the consensus round (documented in
+`docs/deployment_log.json`).
 
-Additional live on-chain records created through the deployed dApp during
-E2E verification are visible on the contract's explorer page.
+Additional live on-chain evidence created through the deployed dApp and
+the mutation-proof script is visible on the contract's explorer page.
 
 ## Data sources (honest description)
 
@@ -99,9 +206,9 @@ E2E verification are visible on the contract's explorer page.
   verifiable — which is what GenLayer consensus equivalence requires.
 - **Phishing labels (inside the contract):** our own repo-hosted snapshot
   of the public `forta-network/labelled-datasets` Fake_Phishing address
-  set (5,743 addresses), synced off-chain by `scripts/sync_dataset.py`
-  and fetched by the contract from a pinned, immutable-per-commit public
-  URL so all validators see the identical dataset.
+  set (5,743 addresses), synced off-chain by `scripts/sync_dataset.py`,
+  **pinned per deployment** to an immutable-by-commit public URL with
+  per-run keccak256 content verification (see fix 4 above).
 - **Etherscan API key (off-chain only):** `ETHERSCAN_API_KEY` is used
   exclusively by off-chain tooling — dataset-sync cross-checks and
   smoke-test verification — never by the contract. It is read from the
@@ -121,38 +228,51 @@ E2E verification are visible on the contract's explorer page.
   transactions found" and `null` balances, while recent/active addresses
   return complete history. Consequence: Signal A's wallet-age metric is
   computed from the oldest transaction *visible on the instance*, which
-  can underestimate true age for wallets with a coverage gap. The
-  contract honestly scores the data it can verifiably fetch, and the
-  reasoning fields state the evidence used. Smoke-test wallets were
-  manually verified on the same instance.
+  can underestimate true age. **Mitigation (fix 4):** every record
+  explicitly classifies its coverage (`history_coverage`), both signal
+  reasonings carry LIMITED-DATA clauses, and the LLM verdict is validated
+  to acknowledge partial data — a verdict can never present itself as
+  full-history analysis. Smoke-test wallets were manually verified on the
+  same instance.
 - **First-100-transaction window:** the contract fetches the first 100
   native + 100 token transfers (`sort=asc`) to keep validator fetches
   comparable and payloads bounded; for very high-volume wallets this is a
-  sample, not full history.
+  sample, not full history — now explicitly recorded per record.
 - **Phishing labels are a periodic snapshot:** addresses newly flagged
-  after the last sync are unknown to the contract until the next sync.
+  after the last sync are unknown to the contract until the next sync;
+  each sync commits a new immutable dataset version and a NEW deployment
+  pins it, while previous records keep their own auditable `dataset_ref`.
 
 ## Architecture summary
 
 - `contracts/TrustReconciler.py` — GenLayer Intelligent Contract
-  (sdk v0.2.16): 2 view + 2 write methods. `request_reconciliation`
-  (permissionless; validated, checksummed input; cooldown-guarded) runs
-  the single fail-safe pipeline inside `gl.nondet`: 4 fetches →
-  deterministic metric/signal computation → LLM arbitration with strict
-  output validation and a hard gate (flagged contact mandates Risk).
-  `request_reevaluation` re-runs after a 1-hour anti-spam cooldown,
-  incrementing `reevaluation_count`. Consensus equivalence compares the
-  deterministic fields (signal scores, divergence flag, final verdict);
-  free-text reasoning is intentionally not compared.
-- `tests/` — 32 direct-mode tests covering all 10 spec scenarios plus
-  hardening extras (checksum/chain validation, LLM hard gate, malformed
-  LLM output, dataset poisoning, cumulative re-eval count).
+  (sdk v0.2.16): 3 view + 2 write methods, 2 constructor params (dataset
+  commit pin + expected keccak). `request_reconciliation`
+  (permissionless; validated, checksummed input; cooldown-guarded;
+  chain-pinned) runs the single fail-safe pipeline inside `gl.nondet`:
+  4 fetches (3 keyless Blockscout + 1 commit-pinned, hash-verified
+  dataset fetch) → history-coverage classification → deterministic
+  metric/signal computation → LLM arbitration with strict output
+  validation and hard gates (flagged contact mandates Risk; partial
+  window requires partial-data acknowledgment).
+  `request_reevaluation` re-runs the SAME pipeline after the 1-hour
+  anti-spam cooldown (uniform for all verdicts, Undetermined included),
+  chain-pinned to the first record, incrementing `reevaluation_count`.
+  Consensus equivalence compares the deterministic fields (signal scores,
+  divergence flag, final verdict); free-text reasoning is intentionally
+  not compared.
+- `tests/` — 60 direct-mode tests covering all 10 spec scenarios plus
+  hardening extras AND the four steward-fix regression classes
+  (28 new tests).
 - `scripts/` — dataset sync (with optional keyed cross-check), deploy +
-  smoke, smoke-wallet research tooling.
-- `frontend/` — single-page dApp (GitHub Pages): burner/imported in-browser
-  wallets, faucet, full write→consensus→read lifecycle, Signal A/B
-  side-by-side cards, divergence badge, verdict panel with complete
-  reasoning, re-check button that respects the cooldown.
+  smoke (pins dataset commit+keccak at deploy, reads back
+  `get_dataset_pin` on-chain), live mutation-proof script.
+- `frontend/` — single-page dApp (GitHub Pages): burner/imported
+  in-browser wallets, faucet, full write→consensus→read lifecycle, Signal
+  A/B side-by-side cards, divergence badge, verdict panel with complete
+  reasoning + history coverage + dataset ref, chain selector locked to
+  the pinned chain, re-check button that respects the cooldown for ALL
+  verdicts (Undetermined bypass removed).
 
 ## Why this fits the Projects track
 
@@ -160,4 +280,5 @@ Same structure as prior accepted Projects submissions (VeriBid,
 SecondHandCarInspectionEscrow): one repo combining contract + tests +
 frontend + deployment evidence, a working live deployment on Studionet
 with real consensus transactions, and an honest README documenting data
-sources and limitations.
+sources and limitations — now hardened per the steward's four review
+items with live on-chain proofs.

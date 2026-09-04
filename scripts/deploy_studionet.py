@@ -21,6 +21,7 @@ Output: docs/deployment_log.json (address, tx hashes, verdicts, timings).
 Explorer: https://explorer-studio.genlayer.com/address/<addr>
 """
 import json
+import sys
 import time
 from pathlib import Path
 
@@ -29,6 +30,40 @@ from genlayer_py.chains import studionet
 from genlayer_py.types import TransactionStatus
 
 CODE = Path("contracts/TrustReconciler.py").read_text()
+
+# --- DATASET PIN (steward fix 4) -------------------------------------------
+# The deployment pins the dataset to (a) the last commit that touched
+# data/phishing_labels.json and (b) the keccak256 of its exact bytes.
+# raw.githubusercontent.com serves immutable content at /<commit>/<path>,
+# so every validator on every run fetches the same bytes, and the
+# contract re-verifies the content hash on-chain each run.
+import hashlib
+import subprocess as sp
+
+PIN_COMMIT = sp.run(
+    ["git", "log", "-1", "--format=%H", "--", "data/phishing_labels.json"],
+    capture_output=True, text=True, check=True).stdout.strip()
+if len(PIN_COMMIT) != 40:
+    raise SystemExit(f"bad dataset commit pin: {PIN_COMMIT!r}")
+_dataset_bytes = Path("data/phishing_labels.json").read_bytes()
+PIN_KECCAK = ""  # computed below (SDK keccak, byte-identical to contract)
+
+try:
+    # prefer the exact keccak the contract itself uses (genlayer.py.keccak)
+    sys.path.insert(0, "tests")
+    try:
+        import vendor_keccak
+        PIN_KECCAK = vendor_keccak.Keccak256(_dataset_bytes).hexdigest()
+    finally:
+        sys.path.remove("tests")
+except Exception as e:
+    raise SystemExit(f"cannot compute dataset keccak: {e}")
+if len(PIN_KECCAK) != 64:
+    raise SystemExit(f"bad dataset keccak: {PIN_KECCAK!r}")
+PIN_SHA256 = hashlib.sha256(_dataset_bytes).hexdigest()
+print(f"dataset pin: commit={PIN_COMMIT}")
+print(f"             keccak256={PIN_KECCAK}")
+print(f"             sha256={PIN_SHA256}")
 
 S1 = "0x930B88a592a045C428f3d99f7f3E5f95e3967508"
 S2 = "0xcF2Ae489e77945F34265FF57393831966E358Db0"
@@ -126,10 +161,16 @@ def main():
     print("faucet: funded deployer", flush=True)
 
     tx = client.deploy_contract(code=CODE, account=client.local_account,
-                                args=[], leader_only=True)
+                                args=[PIN_COMMIT, PIN_KECCAK],
+                                leader_only=True)
     res = wait_final(client, tx, "deploy")
     addr = res["contract_address"]
-    log["deploy"] = {"tx_hash": tx, "address": addr, "deployer": account.address}
+    # read back the pin from the deployed instance — proves the
+    # constructor stored it and the URL is commit-embedded
+    pin = read_json(client, addr, "get_dataset_pin", [])
+    print("dataset pin on-chain:", json.dumps(pin), flush=True)
+    log["deploy"] = {"tx_hash": tx, "address": addr, "deployer": account.address,
+                     "dataset_pin": pin}
     print("CONTRACT:", addr, flush=True)
     print("explorer: https://explorer-studio.genlayer.com/address/" + addr,
           flush=True)

@@ -56,10 +56,41 @@ Design hard lessons encoded (from prior submissions):
      reasoning and confidence are deliberately NOT compared — they
      naturally differ between LLM runs.
   5. RE-EVALUATION COOLDOWN — a per-wallet cooldown guards against
-     spam/griefing; enforced identically on both entrypoints.
+     spam/griefing; enforced identically on BOTH entrypoints AND for
+     EVERY verdict family, including Undetermined (a failed fetch is
+     still a full consensus run that costs gas, so it gets the same
+     cooldown — there is deliberately no "retry sooner because it
+     failed" path; the next attempt simply waits out the same window).
   6. NO EVENT API in GenVM v0.2.16 — the stored record IS the on-chain
      receipt (readable via get_reconciliation; the GenLayer explorer
      shows every state change). Documented in README.
+  7. CHAIN PINNING (steward fix 1) — a wallet's reconciliation record is
+     permanently bound to the chain it was FIRST reconciled on. Any later
+     re-evaluation or renewed request for that wallet MUST use the same
+     chain; a different chain is REJECTED with an explicit error before
+     the non-deterministic block (no silent overwrite of an eth record
+     with base data or vice versa). The bound chain is stored in the
+     record and echoed in get_cooldown_info so frontends can enforce it
+     too.
+  8. DATASET PINNING (steward fix 4) — the Fake_Phishing label dataset is
+     fetched from an IMMUTABLE-BY-COMMIT URL (raw.githubusercontent.com/
+     faisalnugroho/trustreconciler/<sha>/data/phishing_labels.json), never
+     a moving "latest" ref. The pinned commit SHA and the dataset's
+     keccak256 content hash are CONTRACT CONSTANTS, and every validator
+     recomputes the content hash of the fetched dataset inside the
+     leader function; a mismatch (moved/replaced file under the same
+     pin) fails the run explicitly. Every stored record embeds
+     dataset_ref = "<commit>:<keccak256[:16]>" so each verdict is
+     auditable against the exact dataset bytes it judged with.
+  9. PARTIAL-HISTORY HONESTY (steward fix 4) — the txlist/tokentx fetch
+     is a bounded first-N ascending window on a public mirror whose
+     address-level coverage is incomplete. Both limitations are made
+     explicit IN THE DATA ITSELF, never left implicit: when the fetched
+     window is full (N=100 txs) or empty, the record carries
+     history_coverage="partial_window" / "no_visible_history" and both
+     the arbitration prompt and the stored signal reasoning state that
+     the verdict is based on a LIMITED window, so it can never present
+     itself as full-history analysis.
 
 Storage: a single TreeMap[str, ReconciliationRecord] keyed by lowercase
 wallet address (direct-mode homogeneous-TreeMap workaround, proven in
@@ -109,13 +140,66 @@ BLOCKSCOUT_BASES = {
     "base": "https://base.blockscout.com/api",
 }
 
+# --- DATASET PINNING (steward fix 4) ---------------------------------------
 # Our own repo-hosted snapshot of the public forta-network
 # labelled-datasets Fake_Phishing address set (synced periodically by
 # scripts/sync_dataset.py — ChainSeus pattern: manual periodic sync into
-# our own storage, never a live upstream fetch per request). Every
-# validator fetches the same immutable-per-commit public URL.
-DATASET_URL = ("https://raw.githubusercontent.com/faisalnugroho/"
-               "trustreconciler/main/data/phishing_labels.json")
+# our own storage, never a live upstream fetch per request).
+#
+# Three-layer pinning:
+#   Layer 1 (URL immutability): the dataset is fetched from a
+#     raw.githubusercontent.com URL embedding a 40-hex COMMIT SHA
+#     (…/<owner>/<repo>/<COMMIT_SHA>/data/phishing_labels.json). Git
+#     commit SHAs are content-addressed history — the bytes behind this
+#     URL can never change without an explicitly NEW pin. A moving ref
+#     (/main/, /HEAD/, /master/) is rejected at construction by
+#     _valid_dataset_commit_sha: there is NO "fetch latest" path.
+#   Layer 2 (content verification): the deployer passes the expected
+#     keccak256 of the dataset file's exact bytes as a CONSTRUCTOR
+#     argument. Leader AND every validator recompute the hash over the
+#     fetched bytes each run and compare; different content at the
+#     pinned URL fails the run EXPLICITLY (dataset_hash_mismatch ->
+#     Undetermined), never silently changing verdicts.
+#   Layer 3 (auditable record): every stored record embeds
+#     dataset_ref = "<commit12>:<keccak16>" — the dataset identity the
+#     verdict was judged with, independently re-derivable.
+#
+# The pin (commit + expected hash) is per-DEPLOYMENT state, not source
+# constants: syncing a fresh dataset commits a new immutable version,
+# then a NEW deployment pins it. Nothing drifts between syncs.
+#
+# Production pin (current Studionet deployment):
+#   commit   53246b6bb348b41b4336657dd9ae1eaf8dfc43d5
+#   5,743 Fake_Phishing addresses
+#   sha256    2bef96ca59526f55fb7c174386785509e04c2ad66dc24793c41d11b2f258581a
+#   keccak256 ee0076523ad355d5289b55757f61e1a7e555a4b0f952f305e9ddd8f36100fec7
+DATASET_REPO = ("https://raw.githubusercontent.com/faisalnugroho/"
+                "trustreconciler/")
+DATASET_PATH = "data/phishing_labels.json"
+
+_HEX_LOW = "0123456789abcdef"
+
+
+def _valid_dataset_commit_sha(sha) -> bool:
+    """A valid pin is exactly 40 lowercase hex chars (a git commit SHA).
+    'main'/'HEAD'/'master'/short-sha/empty all rejected at construction
+    — the invariant that keeps the fetch immutable."""
+    if not isinstance(sha, str) or len(sha) != 40:
+        return False
+    for ch in sha:
+        if ch not in _HEX_LOW:
+            return False
+    return True
+
+
+def _valid_dataset_keccak(khex) -> bool:
+    """A valid expected-hash is exactly 64 lowercase hex chars."""
+    if not isinstance(khex, str) or len(khex) != 64:
+        return False
+    for ch in khex:
+        if ch not in _HEX_LOW:
+            return False
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -126,7 +210,7 @@ DATASET_URL = ("https://raw.githubusercontent.com/faisalnugroho/"
 class ReconciliationRecord:
     """One reconciliation run for one wallet address."""
     wallet_address: str          # checksummed input address
-    chain: str                   # "eth" | "base"
+    chain: str                   # "eth" | "base" — PINNED to first record
     requester: Address
     requested_at: bigint         # epoch seconds
     signal_a_score: bigint       # 0-100 risk (higher = riskier); -1 if not computed
@@ -138,6 +222,8 @@ class ReconciliationRecord:
     confidence: str              # "Low" | "Medium" | "High"
     final_reasoning: str
     data_sources: str            # human-readable provenance of this run
+    dataset_ref: str             # "<commit12>:<keccak16>" — auditable pin
+    history_coverage: str        # "full_window" | "partial_window" | "no_visible_history"
     last_updated: bigint         # epoch seconds
     reevaluation_count: bigint
 
@@ -209,6 +295,14 @@ def _is_checksummed_address(raw: str) -> bool:
     return check == raw
 
 
+def _keccak256_hex_of_string(text: str) -> str:
+    """keccak256 of a str's UTF-8 bytes, as lowercase hex. Deterministic
+    pure-stdlib path (genlayer.py.keccak) — identical in leader and all
+    validators. Used to verify the pinned dataset's content hash."""
+    from genlayer.py.keccak import Keccak256
+    return Keccak256(text.encode("utf-8")).hexdigest()
+
+
 def _record_to_dict(r: ReconciliationRecord) -> dict:
     return {
         "wallet_address": r.wallet_address,
@@ -224,6 +318,8 @@ def _record_to_dict(r: ReconciliationRecord) -> dict:
         "confidence": r.confidence,
         "final_reasoning": r.final_reasoning,
         "data_sources": r.data_sources,
+        "dataset_ref": r.dataset_ref,
+        "history_coverage": r.history_coverage,
         "last_updated": r.last_updated,
         "reevaluation_count": r.reevaluation_count,
     }
@@ -231,7 +327,7 @@ def _record_to_dict(r: ReconciliationRecord) -> dict:
 
 def _undetermined_record(wallet_address: str, chain: str,
                           requester: Address, now: int,
-                          failures) -> ReconciliationRecord:
+                          failures, dataset_ref: str) -> ReconciliationRecord:
     """Fail-safe record used for ANY data-acquisition failure. The only
     Undetermined construction path — both entrypoints share it, so the
     fail-safe cannot be bypassed on any path (first run or re-eval)."""
@@ -253,8 +349,13 @@ def _undetermined_record(wallet_address: str, chain: str,
             "Fail-safe: reconciliation stopped before any LLM judgment "
             "because required data could not be retrieved: " + reason_txt +
             ". This verdict asserts nothing about the wallet's trust or "
-            "risk; re-run once the data source recovers."),
+            "risk; re-run once the data source recovers. Note: the same "
+            "1-hour anti-spam cooldown applies to this Undetermined "
+            "record — a failed run is a full consensus run, so it gets "
+            "no bypass window."),
         data_sources="data_unavailable",
+        dataset_ref=dataset_ref,
+        history_coverage="unavailable",
         last_updated=now,
         reevaluation_count=0,
     )
@@ -322,10 +423,33 @@ def _detect_burst(timestamps) -> int:
     return best
 
 
+def _coverage_of(n_txs: int, n_ttxs: int) -> str:
+    """Classify how much of the wallet's history the fetched window
+    actually covers (steward fix 4 — make the limitation explicit in
+    the stored data itself, never let a verdict imply full history).
+      full_window        — below the page cap: the window plausibly
+                           contains everything the mirror knows for the
+                           address.
+      partial_window     — the window is FULL (N=100): by construction
+                           this is a bounded sample, and for active
+                           wallets there is history beyond it.
+      no_visible_history — the mirror returned nothing for the address
+                           (known Blockscout coverage gap): says NOTHING
+                           about the wallet's true age or activity."""
+    if n_txs >= MAX_TXS_FETCHED or n_ttxs >= MAX_TOKEN_TXS_FETCHED:
+        return "partial_window"
+    if n_txs + n_ttxs == 0:
+        return "no_visible_history"
+    return "full_window"
+
+
 def _compute_metrics(wallet_address: str, chain: str, txs, ttxs,
-                     balance_wei: int, now: int, flagged_set):
+                     balance_wei: int, now: int, flagged_set,
+                     history_coverage: str, dataset_ref: str):
     """Deterministic metrics + both signal scores. Pure function of the
-    fetched data — leader and every validator run this identically."""
+    fetched data — leader and every validator run this identically.
+    history_coverage is embedded in the metrics dict so the arbitration
+    prompt and both signal reasonings can cite the window limitation."""
     wl = wallet_address.lower()
     counterparties, funding_sources, timestamps, failed = \
         _extract_counterparties(wl, txs, ttxs)
@@ -364,6 +488,8 @@ def _compute_metrics(wallet_address: str, chain: str, txs, ttxs,
         "native_balance_wei": balance_wei,
         "flagged_counterparty_hits": flagged_cp,
         "flagged_funding_hits": flagged_funding,
+        "history_coverage": history_coverage,
+        "dataset_ref": dataset_ref,
     }
 
     # --- Signal A — Risk-Conservative: no positive evidence = risk ------
@@ -405,6 +531,17 @@ def _compute_metrics(wallet_address: str, chain: str, txs, ttxs,
         risk = 15
         a_reasons.append("no conservative risk factors found: established "
                          "age, organic diversity, no flagged contact")
+    # Coverage honesty (steward fix 4): the reasoning must never imply
+    # full-history knowledge when the window is bounded or empty.
+    if history_coverage == "partial_window":
+        a_reasons.append("LIMITED DATA: verdict based on the first "
+                         + str(MAX_TXS_FETCHED) + " txs only (partial "
+                         "history window, not the wallet's full record)")
+    elif history_coverage == "no_visible_history":
+        a_reasons.append("LIMITED DATA: the data source returned no "
+                         "visible history for this address (coverage "
+                         "gap) — absence of data is NOT proof of a new "
+                         "or inactive wallet")
     if risk > 100:
         risk = 100
     signal_a = {"score": risk, "reasoning": "; ".join(a_reasons)}
@@ -433,6 +570,16 @@ def _compute_metrics(wallet_address: str, chain: str, txs, ttxs,
                              + "% failed txs")
         if trust >= 80 and len(b_reasons) >= 3:
             trust = min(100, trust + 5)
+    # Coverage honesty on the optimistic side too: "zero flagged contact"
+    # is only ever proven WITHIN the fetched window.
+    if history_coverage == "partial_window":
+        b_reasons.append("LIMITED DATA: zero flagged contact verified "
+                         "within the first " + str(MAX_TXS_FETCHED)
+                         + "-tx window only, not the full history")
+    elif history_coverage == "no_visible_history":
+        b_reasons.append("LIMITED DATA: no visible history in the data "
+                         "source — trust here means 'nothing negative "
+                         "VISIBLE', not 'history checked and clean'")
     if trust > 100:
         trust = 100
     signal_b = {"score": trust, "reasoning": "; ".join(b_reasons)}
@@ -455,11 +602,38 @@ def _build_arbitration_prompt(wallet_address: str, chain: str, metrics,
                     + " points (inside the "
                     + str(DIVERGENCE_THRESHOLD_POINTS)
                     + "-point divergence threshold).")
+    # Coverage caveat in the prompt (steward fix 4): the arbiter must
+    # weigh the evidence AS a bounded window and must say so when the
+    # window is limited — a verdict may never present itself as
+    # full-history analysis.
+    cov = str(metrics.get("history_coverage") or "full_window")
+    if cov == "partial_window":
+        caveat = ("DATA WINDOW CAVEAT: the measured facts come from a "
+                  "LIMITED window (first " + str(MAX_TXS_FETCHED)
+                  + " native + " + str(MAX_TOKEN_TXS_FETCHED)
+                  + " token transfers, ascending). This is a bounded "
+                  "sample, NOT the wallet's full history. Your verdict "
+                  "is about the evidence in this window only; if your "
+                  "reasoning relies on completeness (e.g. 'no history' "
+                  "or 'all transactions'), it must explicitly qualify "
+                  "this limitation.")
+    elif cov == "no_visible_history":
+        caveat = ("DATA WINDOW CAVEAT: the data source returned NO "
+                  "visible history for this address (a known coverage "
+                  "gap on the public mirror). Absence of data here does "
+                  "NOT prove the wallet is new or inactive. Treat any "
+                  "'no history' reading as 'no history VISIBLE in this "
+                  "window', and qualify this in your reasoning.")
+    else:
+        caveat = ("DATA WINDOW NOTE: the fetched window is below the "
+                  "page cap and appears to cover the address's full "
+                  "visible history on this data source.")
     return (
         "You are the neutral arbiter of two wallet-trust analysis models "
         "with opposing philosophies, running as a GenLayer consensus "
         "judgment.\n\n"
         "WALLET: " + wallet_address + "  (chain: " + chain + ")\n\n"
+        + caveat + "\n\n"
         "MODEL A — RISK-CONSERVATIVE (treats absence of positive evidence "
         "as risk):\n"
         "  risk_score: " + str(signal_a["score"]) + "/100 (higher = riskier)\n"
@@ -478,7 +652,11 @@ def _build_arbitration_prompt(wallet_address: str, chain: str, metrics,
         "cause of the divergence — WHICH measured fact drives the two "
         "philosophies apart — and justify which philosophy fits this "
         "wallet's actual evidence better. Do NOT simply average the two "
-        "scores; resolve the conflict.\n\n"
+        "scores; resolve the conflict.\n"
+        "3. Your verdict is based ONLY on the measured facts above, "
+        "including their stated coverage — if the coverage is a limited "
+        "window, your final_reasoning MUST acknowledge that the verdict "
+        "rests on partial data, not full history.\n\n"
         "DECISION CRITERIA (apply strictly):\n"
         "- ANY phishing-flagged contact (flagged_counterparty_hits or "
         "flagged_funding_hits > 0) mandates \"Risk\".\n"
@@ -491,7 +669,9 @@ def _build_arbitration_prompt(wallet_address: str, chain: str, metrics,
         "{\"final_direction\": \"Trust\" or \"Risk\",\n"
         " \"confidence\": \"Low\" or \"Medium\" or \"High\",\n"
         " \"final_reasoning\": \"one concise paragraph; if the models "
-        "diverge it must name the root cause of the divergence\"}"
+        "diverge it must name the root cause of the divergence; if the "
+        "data coverage is a limited window it must say the verdict rests "
+        "on partial data\"}"
     )
 
 
@@ -523,6 +703,15 @@ def _validate_arbiter_output(parsed, divergence: bool, metrics):
             and (metrics.get("flagged_counterparty_hits", 0) > 0
                  or metrics.get("flagged_funding_hits", 0) > 0)):
         return False, "flagged_contact_requires_risk"
+    # Coverage honesty gate (steward fix 4): on a partial window the
+    # reasoning must acknowledge partial data — the LLM may not imply
+    # full-history analysis.
+    cov = str(metrics.get("history_coverage") or "")
+    if cov == "partial_window":
+        low = reasoning.lower()
+        if ("partial" not in low and "window" not in low
+                and "limit" not in low and "sample" not in low):
+            return False, "partial_data_ack_missing"
     verdict = ((("Divergent-Resolved-" + direction)
                 if divergence
                 else ("Aligned-Trustworthy" if direction == "Trust"
@@ -541,9 +730,44 @@ class TrustReconciler(gl.Contract):
     """Two independent trust/risk signals + GenLayer LLM consensus arbiter."""
 
     reconciliations: TreeMap[str, ReconciliationRecord]
+    dataset_commit_sha: str     # 40-hex git commit of the pinned dataset
+    dataset_keccak256: str     # expected keccak256 of the dataset bytes
+    dataset_url: str           # immutable commit-embedded fetch URL
+    dataset_ref: str           # "<commit12>:<keccak16>" audit reference
 
-    def __init__(self):
+    def __init__(self, dataset_commit_sha: str, dataset_keccak256: str):
+        # Constructor-level validation of the DATASET PIN (steward fix 4,
+        # layer 1): the commit SHA must be a real 40-hex git SHA and the
+        # expected hash a real 64-hex keccak — 'main'/'HEAD'/'master' or
+        # any moving ref is rejected RIGHT HERE, before the contract can
+        # ever serve a request. There is no default and no moving-ref
+        # path: every deployment pins an immutable dataset version.
+        if not _valid_dataset_commit_sha(dataset_commit_sha):
+            raise AssertionError("invalid_dataset_commit_sha:"
+                                 "must_be_40_hex_commit_not_moving_ref")
+        if not _valid_dataset_keccak(dataset_keccak256):
+            raise AssertionError("invalid_dataset_keccak256:"
+                                 "must_be_64_hex")
         self.reconciliations = TreeMap()
+        self.dataset_commit_sha = dataset_commit_sha
+        self.dataset_keccak256 = dataset_keccak256
+        self.dataset_url = (DATASET_REPO + dataset_commit_sha + "/"
+                            + DATASET_PATH)
+        self.dataset_ref = (dataset_commit_sha[:12] + ":"
+                            + dataset_keccak256[:16])
+
+    # ------------------------------------------------------------------ view
+    @gl.public.view
+    def get_dataset_pin(self) -> str:
+        """The active dataset pin (commit, expected keccak, URL, ref) so
+        anyone can audit exactly which dataset version this deployment
+        judges with, and re-derive the bytes independently."""
+        return json.dumps({
+            "commit_sha": self.dataset_commit_sha,
+            "keccak256": self.dataset_keccak256,
+            "url": self.dataset_url,
+            "ref": self.dataset_ref,
+        })
 
     # ------------------------------------------------------------------ view
     @gl.public.view
@@ -556,19 +780,26 @@ class TrustReconciler(gl.Contract):
 
     @gl.public.view
     def get_cooldown_info(self, wallet_address: str) -> str:
-        """Pure-storage cooldown info for frontends: the cooldown constant
-        and the wallet's last_updated. The REMAINING time is computed
-        client-side from wall clock (a view call has no trustworthy
-        transaction datetime; the write path enforces the real guard)."""
+        """Pure-storage cooldown info for frontends: the cooldown constant,
+        the wallet's last_updated, and the PINNED CHAIN (steward fix 1) so
+        the UI can lock the chain selector to the recorded one. The
+        REMAINING time is computed client-side from wall clock (a view
+        call has no trustworthy transaction datetime; the write path
+        enforces the real guard). The cooldown applies to ALL verdict
+        families, including Undetermined — this view exposes exactly the
+        same last_updated the write path guards on, so a frontend using
+        it cannot offer an early Undetermined retry."""
         key = wallet_address.strip().lower()
         if key not in self.reconciliations:
             return json.dumps({"wallet_known": False,
                                "cooldown_seconds": REEVAL_COOLDOWN_SECONDS,
-                               "last_updated": 0})
+                               "last_updated": 0,
+                               "chain": ""})
         r = self.reconciliations[key]
         return json.dumps({"wallet_known": True,
                           "cooldown_seconds": REEVAL_COOLDOWN_SECONDS,
-                          "last_updated": r.last_updated})
+                          "last_updated": r.last_updated,
+                          "chain": r.chain})
 
     # ------------------------------------------------------------ entrypoints
     @gl.public.write
@@ -589,9 +820,21 @@ class TrustReconciler(gl.Contract):
         now = _parse_iso_epoch(gl.message_raw["datetime"])
         requester = gl.message.sender_address
 
-        # Cooldown guard applies to BOTH entrypoints identically — a fresh
-        # request for a recently-reconciled wallet is the same griefing
-        # vector as a re-evaluation, so it gets the same guard.
+        # CHAIN PINNING (steward fix 1): if this wallet already has a
+        # record, the requested chain MUST match the chain pinned by the
+        # FIRST record. A different chain would judge the same address on
+        # different data and silently overwrite the existing verdict —
+        # rejected explicitly, before any consensus work.
+        if key in self.reconciliations:
+            pinned = self.reconciliations[key].chain
+            if chain != pinned:
+                raise AssertionError("chain_mismatch:pinned_to:" + pinned)
+
+        # Cooldown guard applies to BOTH entrypoints identically and to
+        # EVERY verdict family, Undetermined included — a fresh request
+        # for a recently-reconciled wallet is the same griefing vector as
+        # a re-evaluation, and a failed (Undetermined) run is still a
+        # full consensus run that must not be spammable.
         if key in self.reconciliations:
             elapsed = now - self.reconciliations[key].last_updated
             if elapsed < REEVAL_COOLDOWN_SECONDS:
@@ -613,7 +856,9 @@ class TrustReconciler(gl.Contract):
         """Re-run the pipeline for an already-reconciled wallet. Runs the
         exact SAME pipeline as request_reconciliation — including the
         Undetermined fail-safe (WarrantyClaimOracle lesson: no appeal or
-        retry path may ever bypass it)."""
+        retry path may ever bypass it) and the same cooldown (an
+        Undetermined record cools down exactly like any other verdict —
+        no bypass window exists on any path)."""
         chain = (chain or "").strip().lower()
         if chain not in SUPPORTED_CHAINS:
             raise AssertionError("unsupported_chain:" + chain)
@@ -629,6 +874,14 @@ class TrustReconciler(gl.Contract):
         if key not in self.reconciliations:
             raise AssertionError("no_prior_reconciliation")
         prev = self.reconciliations[key]
+        # CHAIN PINNING (steward fix 1): a re-evaluation must preserve the
+        # chain of the original record — re-evaluating a wallet that was
+        # first reconciled on eth with chain=base (or vice versa) would
+        # judge different data and overwrite the existing verdict. The
+        # original record's chain is authoritative; anything else is
+        # rejected BEFORE the non-deterministic block.
+        if chain != prev.chain:
+            raise AssertionError("chain_mismatch:pinned_to:" + prev.chain)
         elapsed = now - prev.last_updated
         if elapsed < REEVAL_COOLDOWN_SECONDS:
             raise AssertionError("cooldown_active:"
@@ -707,28 +960,34 @@ class TrustReconciler(gl.Contract):
             except Exception as e:
                 failures.append("balance:" + repr(e)[:60])
 
-            def _get_raw_json(url):
-                # HTTP-level validation only (status 200 + JSON dict).
-                # Payload-shape validation is the CALLER's job — the
-                # Etherscan-compatible endpoints use _get_json above,
-                # while our own JSON dataset has a different schema.
-                resp = gl.nondet.web.get(url)
+            # Steps 4a-4b: phishing label dataset — PINNED fetch + content
+            # hash verification (steward fix 4, layers 1+2). The URL
+            # embeds the immutable commit SHA set at deployment (never a
+            # moving ref), and the keccak256 of the fetched bytes is
+            # recomputed by the leader AND every validator and compared
+            # to the deployment's expected hash: a dataset that differs
+            # by even one byte fails the run EXPLICITLY
+            # (dataset_hash_mismatch), so a replaced/moved file can never
+            # silently change verdicts under a live deployment.
+            flagged_set = None
+            dataset_hash_ok = False
+            try:
+                resp = gl.nondet.web.get(self.dataset_url)
                 if resp.status != 200:
                     raise AssertionError("http_" + str(resp.status))
                 if resp.body is None:
                     raise AssertionError("empty_body")
-                data = json.loads(resp.body.decode("utf-8", errors="replace"))
-                if not isinstance(data, dict):
+                body_text = resp.body.decode("utf-8", errors="replace")
+                fetched_hash = _keccak256_hex_of_string(body_text)
+                if fetched_hash != self.dataset_keccak256:
+                    raise AssertionError(
+                        "dataset_hash_mismatch:expected_"
+                        + self.dataset_keccak256[:16] + "_got_"
+                        + fetched_hash[:16])
+                dataset_hash_ok = True
+                d = json.loads(body_text)
+                if not isinstance(d, dict):
                     raise AssertionError("malformed_payload")
-                return data
-
-            # Step 4: phishing label dataset (our repo-hosted snapshot of
-            # the public forta Fake_Phishing set). Empty, unparseable, or
-            # badly-shaped dataset = explicit failure -> Undetermined
-            # (test scenario: never silently skip the flag check).
-            flagged_set = None
-            try:
-                d = _get_raw_json(DATASET_URL)
                 addresses = d.get("addresses")
                 if not isinstance(addresses, list) or len(addresses) == 0:
                     raise AssertionError("dataset_empty")
@@ -740,7 +999,7 @@ class TrustReconciler(gl.Contract):
                     lowered.add(a.lower())
                 flagged_set = lowered
             except Exception as e:
-                failures.append("dataset:" + repr(e)[:60])
+                failures.append("dataset:" + repr(e)[:90])
 
             # Step 5: ANY data failure => stop BEFORE the LLM. Partial
             # data must never reach arbitration.
@@ -748,10 +1007,15 @@ class TrustReconciler(gl.Contract):
                     or flagged_set is None:
                 return {"undetermined": True, "failures": failures}
 
+            # Step 5b: classify the history coverage of the fetched
+            # window (steward fix 4) — carried into metrics, prompt,
+            # stored reasoning, and the stored record.
+            history_coverage = _coverage_of(len(txs), len(ttxs))
+
             # Step 6: deterministic signals (identical for every validator)
             metrics, signal_a, signal_b, divergence = _compute_metrics(
                 wallet_address, chain, txs, ttxs, balance_wei, now,
-                flagged_set)
+                flagged_set, history_coverage, self.dataset_ref)
 
             # Step 7: LLM arbitration over complete data.
             prompt = _build_arbitration_prompt(
@@ -778,6 +1042,8 @@ class TrustReconciler(gl.Contract):
             return {
                 "undetermined": False,
                 "failures": [],
+                "dataset_hash_ok": dataset_hash_ok,
+                "history_coverage": history_coverage,
                 "metrics": metrics,
                 "signal_a": signal_a,
                 "signal_b": signal_b,
@@ -822,13 +1088,13 @@ class TrustReconciler(gl.Contract):
         if result.get("undetermined"):
             return _undetermined_record(
                 wallet_address, chain, requester, now,
-                result.get("failures", []))
+                result.get("failures", []), self.dataset_ref)
 
         data_sources = ("blockscout-" + chain
                         + " (module=account: txlist, tokentx, balance; "
                         "Etherscan-compatible keyless public API); "
                         "forta-network labelled-datasets Fake_Phishing "
-                        "snapshot: " + DATASET_URL)
+                        "snapshot (pinned): " + self.dataset_url)
         return ReconciliationRecord(
             wallet_address=wallet_address,
             chain=chain,
@@ -843,6 +1109,8 @@ class TrustReconciler(gl.Contract):
             confidence=str(result["confidence"]),
             final_reasoning=str(result["final_reasoning"]),
             data_sources=data_sources,
+            dataset_ref=self.dataset_ref,
+            history_coverage=str(result["history_coverage"]),
             last_updated=now,
             reevaluation_count=0,
         )

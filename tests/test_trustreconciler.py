@@ -24,7 +24,9 @@ Additional hardening:
   + view helpers
 """
 import json
+import sys
 import time
+from pathlib import Path
 
 import pytest
 
@@ -33,11 +35,14 @@ from gltest.direct.sdk_loader import setup_sdk_paths
 
 from helpers import (
     CONTRACT, TARGET_WALLET, FLAGGED_CP,
+    COUNTERPARTY_1,
     REQUESTER, DATASET_URL_PREFIX,
+    TEST_DATASET_COMMIT, TEST_DATASET_KECCAK, TEST_DATASET_REF,
+    TEST_DATASET_URL,
     addr_str, iso_now, iso_in, set_time,
     tx, ok_list, empty_list, ok_balance, dataset_payload,
     old_clean_wallet_txs, fresh_clean_wallet_txs,
-    flagged_funding_wallet_txs,
+    flagged_funding_wallet_txs, busy_wallet_txs,
     mock_web_ok, mock_llm_direction, mock_llm_divergent_root_cause,
     get_record, reconcile,
 )
@@ -54,7 +59,11 @@ def now_ts():
 @pytest.fixture()
 def env(direct_vm):
     set_time(direct_vm, iso_now())
-    contract = deploy_contract(CONTRACT, direct_vm)
+    # Deploy pinned to the TEST dataset (fake 40-hex commit + keccak of
+    # the canonical mocked payload) — the pin machinery is exercised on
+    # every test, exactly as the production deploy pins the real commit.
+    contract = deploy_contract(CONTRACT, direct_vm,
+                               TEST_DATASET_COMMIT, TEST_DATASET_KECCAK)
     return direct_vm, contract
 
 
@@ -402,6 +411,425 @@ class TestViews:
         assert info["wallet_known"] is True
         assert info["cooldown_seconds"] == 3600
         assert info["last_updated"] > 0
+
+
+# ---------------------------------------------------------------------------
+# Steward "Action needed" fixes — regression proofs (Sep 2026)
+# ---------------------------------------------------------------------------
+class TestStewardFixChainPinning:
+    """Fix 1: re-evaluation must preserve the chain of the original
+    record; a different chain is explicitly rejected."""
+
+    def _seed(self, vm, c, chain="eth"):
+        register_full_ok(vm, old_clean_wallet_txs(now_ts()))
+        mock_llm_direction(vm, "Trust")
+        vm.sender = REQUESTER
+        return json.loads(c.request_reconciliation(TARGET_WALLET, chain))
+
+    def test_reeval_with_different_chain_reverts(self, env):
+        vm, c = env
+        first = self._seed(vm, c, "eth")
+        assert first["chain"] == "eth"
+        set_time(vm, iso_in(3700))          # cooldown fully elapsed
+        vm.clear_mocks()
+        register_full_ok(vm, old_clean_wallet_txs(now_ts()))
+        mock_llm_direction(vm, "Risk")
+        vm.sender = REQUESTER
+        with pytest.raises(AssertionError) as ei:
+            c.request_reevaluation(TARGET_WALLET, "base")
+        assert "chain_mismatch" in str(ei.value)
+        assert "pinned_to:eth" in str(ei.value)
+
+    def test_reeval_with_different_chain_reverts_even_inside_cooldown(self, env):
+        vm, c = env
+        self._seed(vm, c, "eth")
+        vm.clear_mocks()
+        register_full_ok(vm, old_clean_wallet_txs(now_ts()))
+        mock_llm_direction(vm, "Risk")
+        vm.sender = REQUESTER
+        # no time warp: still inside cooldown AND wrong chain — the chain
+        # pin must reject regardless of cooldown state.
+        with pytest.raises(AssertionError) as ei:
+            c.request_reevaluation(TARGET_WALLET, "base")
+        assert "chain_mismatch" in str(ei.value)
+
+    def test_renewed_request_with_different_chain_reverts(self, env):
+        vm, c = env
+        self._seed(vm, c, "eth")
+        set_time(vm, iso_in(3700))
+        vm.clear_mocks()
+        register_full_ok(vm, old_clean_wallet_txs(now_ts()))
+        mock_llm_direction(vm, "Risk")
+        vm.sender = REQUESTER
+        with pytest.raises(AssertionError) as ei:
+            c.request_reconciliation(TARGET_WALLET, "base")
+        assert "chain_mismatch" in str(ei.value)
+        # and the base record must NOT have been created/overwritten
+        back = get_record(c)
+        assert back["chain"] == "eth"
+        assert back["reevaluation_count"] == 1
+
+    def test_renewed_request_same_chain_after_cooldown_allowed(self, env):
+        vm, c = env
+        self._seed(vm, c, "base")
+        set_time(vm, iso_in(3700))
+        vm.clear_mocks()
+        register_full_ok(vm, old_clean_wallet_txs(now_ts()))
+        mock_llm_direction(vm, "Trust")
+        vm.sender = REQUESTER
+        rec = json.loads(c.request_reconciliation(TARGET_WALLET, "base"))
+        assert rec["chain"] == "base"
+        assert rec["reevaluation_count"] == 2
+
+    def test_first_record_pins_chain_for_all_later_runs(self, env):
+        vm, c = env
+        self._seed(vm, c, "base")          # FIRST record on base
+        set_time(vm, iso_in(3700))
+        vm.clear_mocks()
+        register_full_ok(vm, old_clean_wallet_txs(now_ts()))
+        mock_llm_direction(vm, "Trust")
+        vm.sender = REQUESTER
+        with pytest.raises(AssertionError) as ei:
+            c.request_reevaluation(TARGET_WALLET, "eth")
+        assert "pinned_to:base" in str(ei.value)
+
+    def test_cooldown_info_exposes_pinned_chain(self, env):
+        vm, c = env
+        self._seed(vm, c, "eth")
+        info = json.loads(c.get_cooldown_info(TARGET_WALLET))
+        assert info["chain"] == "eth"
+        info_unknown = json.loads(c.get_cooldown_info(COUNTERPARTY_1))
+        assert info_unknown["wallet_known"] is False
+        assert info_unknown["chain"] == ""
+
+
+class TestStewardFixRecordMutation:
+    """Fix 2: prove the stored record REALLY changes after cooldown —
+    last_updated bump + reevaluation_count increment + at least one
+    substantive field (score/verdict/reasoning) differs when the new
+    data differs. A no-op re-eval must be impossible to observe."""
+
+    def _seed(self, vm, c):
+        register_full_ok(vm, flagged_funding_wallet_txs(now_ts()))
+        mock_llm_direction(
+            vm, "Risk",
+            reasoning=("The wallet was funded by an address carrying the "
+                       "Fake_Phishing label; both models independently "
+                       "identify this as decisive negative evidence."))
+        vm.sender = REQUESTER
+        return json.loads(c.request_reconciliation(TARGET_WALLET, "eth"))
+
+    def test_record_really_changes_after_cooldown(self, env):
+        vm, c = env
+        before = self._seed(vm, c)
+        assert before["final_verdict"] == "Aligned-Risky"
+        t_before = before["last_updated"]
+
+        set_time(vm, iso_in(3700))          # past the 1h cooldown
+        vm.clear_mocks()
+        # NEW on-chain reality: the flagged funder is GONE from the
+        # wallet's history window and it now looks established + clean.
+        register_full_ok(vm, old_clean_wallet_txs(now_ts()))
+        mock_llm_direction(vm, "Trust")
+        vm.sender = REQUESTER
+        after = json.loads(c.request_reevaluation(TARGET_WALLET, "eth"))
+
+        # (a) provenance fields prove the run happened
+        assert after["reevaluation_count"] == before["reevaluation_count"] + 1
+        assert after["last_updated"] > t_before
+        assert after["requested_at"] > before["requested_at"]
+        # (b) substantive change is NOT a no-op — the new data differs,
+        # so at least one of score/verdict/reasoning must differ
+        substantive = [
+            after["signal_a_score"] != before["signal_a_score"],
+            after["signal_b_score"] != before["signal_b_score"],
+            after["final_verdict"] != before["final_verdict"],
+            after["signal_a_reasoning"] != before["signal_a_reasoning"],
+            after["signal_b_reasoning"] != before["signal_b_reasoning"],
+            after["final_reasoning"] != before["final_reasoning"],
+        ]
+        assert any(substantive), "re-eval was a silent no-op"
+        assert after["final_verdict"] == "Aligned-Trustworthy"
+        assert after["signal_a_score"] < before["signal_a_score"]
+
+        # (c) the change is COMMITTED to storage, not just returned
+        stored = get_record(c)
+        assert stored["reevaluation_count"] == 2
+        assert stored["final_verdict"] == "Aligned-Trustworthy"
+        assert stored["signal_a_score"] == after["signal_a_score"]
+        assert stored["final_reasoning"] == after["final_reasoning"]
+        assert stored["last_updated"] == after["last_updated"]
+
+    def test_record_really_changes_when_new_data_fails(self, env):
+        vm, c = env
+        before = self._seed(vm, c)
+        t_before = before["last_updated"]
+        set_time(vm, iso_in(3700))
+        vm.clear_mocks()
+        # API now failing -> the record must concretely CHANGE to the
+        # fail-safe state (again: not a no-op).
+        vm.mock_web("module=account&action=txlist",
+                    {"status": 500, "body": "down"})
+        vm.mock_web("module=account&action=tokentx",
+                    {"status": 200, "body": json.dumps(ok_list([]))})
+        vm.mock_web("module=account&action=balance",
+                    {"status": 200, "body": json.dumps(ok_balance(0))})
+        vm.mock_web(DATASET_MOCK_PATTERN,
+                    {"status": 200, "body": json.dumps(dataset_payload())})
+        poison_llm(vm, "mutation-failure")
+        vm.sender = REQUESTER
+        after = json.loads(c.request_reevaluation(TARGET_WALLET, "eth"))
+        assert after["reevaluation_count"] == 2
+        assert after["last_updated"] > t_before
+        assert after["final_verdict"] == "Undetermined"
+        assert after["final_verdict"] != before["final_verdict"]
+        assert "txlist" in after["final_reasoning"]
+        stored = get_record(c)
+        assert stored["final_verdict"] == "Undetermined"
+        assert stored["reevaluation_count"] == 2
+
+
+class TestStewardFixUndeterminedCooldown:
+    """Fix 3: cooldown applies identically to Undetermined — no bypass."""
+
+    def _seed_undetermined(self, vm, c):
+        # data-failure run -> stored Undetermined record
+        vm.mock_web("module=account&action=txlist",
+                    {"status": 500, "body": "down"})
+        vm.mock_web("module=account&action=tokentx",
+                    {"status": 200, "body": json.dumps(ok_list([]))})
+        vm.mock_web("module=account&action=balance",
+                    {"status": 200, "body": json.dumps(ok_balance(0))})
+        vm.mock_web(DATASET_MOCK_PATTERN,
+                    {"status": 200, "body": json.dumps(dataset_payload())})
+        poison_llm(vm, "undetermined-seed")
+        vm.sender = REQUESTER
+        rec = json.loads(c.request_reconciliation(TARGET_WALLET, "eth"))
+        assert rec["final_verdict"] == "Undetermined"
+        return rec
+
+    def test_undetermined_reeval_before_cooldown_reverts(self, env):
+        vm, c = env
+        self._seed_undetermined(vm, c)
+        vm.clear_mocks()
+        register_full_ok(vm, old_clean_wallet_txs(now_ts()))
+        mock_llm_direction(vm, "Trust")
+        vm.sender = REQUESTER
+        with pytest.raises(AssertionError) as ei:
+            c.request_reevaluation(TARGET_WALLET, "eth")
+        assert "cooldown_active" in str(ei.value)
+        # nothing ran, nothing changed
+        assert get_record(c)["final_verdict"] == "Undetermined"
+        assert get_record(c)["reevaluation_count"] == 1
+
+    def test_undetermined_new_request_before_cooldown_reverts(self, env):
+        vm, c = env
+        self._seed_undetermined(vm, c)
+        vm.clear_mocks()
+        register_full_ok(vm, old_clean_wallet_txs(now_ts()))
+        mock_llm_direction(vm, "Trust")
+        vm.sender = REQUESTER
+        with pytest.raises(AssertionError) as ei:
+            c.request_reconciliation(TARGET_WALLET, "eth")
+        assert "cooldown_active" in str(ei.value)
+        assert get_record(c)["reevaluation_count"] == 1
+
+    def test_undetermined_retry_only_after_full_cooldown(self, env):
+        vm, c = env
+        self._seed_undetermined(vm, c)
+        t0 = get_record(c)["last_updated"]
+        # +30 min: still inside cooldown — must revert
+        set_time(vm, iso_in(1800))
+        vm.clear_mocks()
+        register_full_ok(vm, old_clean_wallet_txs(now_ts()))
+        mock_llm_direction(vm, "Trust")
+        vm.sender = REQUESTER
+        with pytest.raises(AssertionError):
+            c.request_reevaluation(TARGET_WALLET, "eth")
+        # +61 min: past cooldown — retry allowed, record concretely
+        # changes to the recovered verdict
+        set_time(vm, iso_in(3660))
+        vm.clear_mocks()
+        register_full_ok(vm, old_clean_wallet_txs(now_ts()))
+        mock_llm_direction(vm, "Trust")
+        vm.sender = REQUESTER
+        after = json.loads(c.request_reevaluation(TARGET_WALLET, "eth"))
+        assert after["final_verdict"] == "Aligned-Trustworthy"
+        assert after["reevaluation_count"] == 2
+        assert after["last_updated"] > t0
+        assert get_record(c)["final_verdict"] == "Aligned-Trustworthy"
+
+
+class TestStewardFixDatasetPinning:
+    """Fix 4a: dataset pinned to an immutable commit + content-hash
+    verified; every record stores the dataset_ref for auditability."""
+
+    def test_records_embed_dataset_ref(self, env):
+        vm, c = env
+        register_full_ok(vm, old_clean_wallet_txs(now_ts()))
+        mock_llm_direction(vm, "Trust")
+        rec = reconcile(vm, c)
+        # "<commit12>:<keccak16>" — auditable pin in EVERY record, and
+        # it matches the deployment's pin exactly.
+        assert rec["dataset_ref"] == TEST_DATASET_REF
+        stored = get_record(c)
+        assert stored["dataset_ref"] == rec["dataset_ref"]
+
+    def test_get_dataset_pin_view_exposes_full_pin(self, env):
+        vm, c = env
+        pin = json.loads(c.get_dataset_pin())
+        assert pin["commit_sha"] == TEST_DATASET_COMMIT
+        assert pin["keccak256"] == TEST_DATASET_KECCAK
+        # the fetch URL embeds the COMMIT SHA — never a moving ref
+        assert ("/" + TEST_DATASET_COMMIT + "/") in pin["url"]
+        assert pin["url"] == TEST_DATASET_URL
+        assert not pin["url"].rstrip("/").endswith(
+            ("/main", "/HEAD", "/master"))
+        assert pin["ref"] == TEST_DATASET_REF
+
+    def test_dataset_ref_is_real_keccak_of_mock_body(self, env):
+        vm, c = env
+        register_full_ok(vm, old_clean_wallet_txs(now_ts()))
+        mock_llm_direction(vm, "Trust")
+        rec = reconcile(vm, c)
+        # the ref's keccak half must equal the ACTUAL keccak of the body
+        # the mocks served (helpers computed the same way the contract
+        # does — over the decoded UTF-8 body text).
+        assert rec["dataset_ref"].split(":")[1] \
+            == TEST_DATASET_KECCAK[:16]
+
+    def test_dataset_content_hash_mismatch_undetermined(self, env):
+        vm, c = env
+        # a DIFFERENT dataset (someone replaced the file at the pinned
+        # URL / a tampered mirror) — content hash check must fail the
+        # run explicitly, never silently use the new labels
+        register_full_ok(vm, old_clean_wallet_txs(now_ts()),
+                         dataset_body=json.dumps(
+                             {"addresses": [FLAGGED_CP.lower()]}))
+        poison_llm(vm, "hash-mismatch")
+        rec = reconcile(vm, c)
+        assert_undetermined(rec, "dataset_hash_mismatch")
+
+    def test_deploy_rejects_moving_ref_pin(self, direct_vm):
+        # constructing with 'main' (the OLD moving-ref behavior) must be
+        # impossible — the constructor rejects non-40-hex commit SHAs.
+        with pytest.raises(AssertionError) as ei:
+            deploy_contract(CONTRACT, direct_vm, "main",
+                            TEST_DATASET_KECCAK)
+        assert "invalid_dataset_commit_sha" in str(ei.value)
+
+    def test_deploy_rejects_malformed_keccak(self, direct_vm):
+        with pytest.raises(AssertionError) as ei:
+            deploy_contract(CONTRACT, direct_vm, TEST_DATASET_COMMIT,
+                            "not-a-hash")
+        assert "invalid_dataset_keccak256" in str(ei.value)
+
+    def test_deploy_rejects_HEAD(self, direct_vm):
+        with pytest.raises(AssertionError):
+            deploy_contract(CONTRACT, direct_vm, "HEAD",
+                            TEST_DATASET_KECCAK)
+
+    def test_deploy_rejects_master(self, direct_vm):
+        with pytest.raises(AssertionError):
+            deploy_contract(CONTRACT, direct_vm, "master",
+                            TEST_DATASET_KECCAK)
+
+    def test_deploy_rejects_short_sha(self, direct_vm):
+        with pytest.raises(AssertionError):
+            deploy_contract(CONTRACT, direct_vm, "53246b6bb348b",
+                            TEST_DATASET_KECCAK)
+
+    def test_deploy_rejects_39_hex_sha(self, direct_vm):
+        with pytest.raises(AssertionError):
+            deploy_contract(CONTRACT, direct_vm, TEST_DATASET_COMMIT[:39],
+                            TEST_DATASET_KECCAK)
+
+    def test_deploy_rejects_empty_sha(self, direct_vm):
+        with pytest.raises(AssertionError):
+            deploy_contract(CONTRACT, direct_vm, "",
+                            TEST_DATASET_KECCAK)
+
+    def test_contract_source_has_no_moving_dataset_url(self, env):
+        vm, c = env
+        # static source-level guard: no raw.githubusercontent URL with a
+        # moving ref may appear anywhere in the contract source.
+        import re
+        src = Path("contracts/TrustReconciler.py").read_text()
+        assert not re.search(
+            r"raw\.githubusercontent\.com/faisalnugroho/trustreconciler/"
+            r"(main|HEAD|master)/", src), "dataset URL uses a moving ref"
+        # the contract URL is built ONLY from a validated 40-hex pin
+        assert "DATASET_REPO" in src
+        assert "_valid_dataset_commit_sha" in src
+
+    def test_undetermined_record_also_carries_dataset_ref(self, env):
+        vm, c = env
+        vm.mock_web("module=account&action=txlist",
+                    {"status": 500, "body": "down"})
+        vm.mock_web("module=account&action=tokentx",
+                    {"status": 200, "body": json.dumps(ok_list([]))})
+        vm.mock_web("module=account&action=balance",
+                    {"status": 200, "body": json.dumps(ok_balance(0))})
+        vm.mock_web(DATASET_MOCK_PATTERN,
+                    {"status": 200, "body": json.dumps(dataset_payload())})
+        poison_llm(vm, "undet-ref")
+        vm.sender = REQUESTER
+        rec = json.loads(c.request_reconciliation(TARGET_WALLET, "eth"))
+        assert rec["final_verdict"] == "Undetermined"
+        assert rec["dataset_ref"] == TEST_DATASET_REF
+
+
+class TestStewardFixPartialHistoryHonesty:
+    """Fix 4b: fetched-window limitations are explicit in the stored
+    record, signal reasoning, prompt, and arbiter output."""
+
+    def test_full_window_recorded_as_full(self, env):
+        vm, c = env
+        register_full_ok(vm, old_clean_wallet_txs(now_ts()))
+        mock_llm_direction(vm, "Trust")
+        rec = reconcile(vm, c)
+        assert rec["history_coverage"] == "full_window"
+
+    def test_full_page_cap_forces_partial_window(self, env):
+        vm, c = env
+        register_full_ok(vm, busy_wallet_txs(now_ts(), 100))
+        mock_llm_direction(
+            vm, "Trust",
+            reasoning=("Based on this partial window the wallet shows "
+                       "organic, non-flagged activity; the verdict rests "
+                       "on the first-100-tx sample, not full history."))
+        rec = reconcile(vm, c)
+        assert rec["history_coverage"] == "partial_window"
+        assert "LIMITED DATA" in rec["signal_a_reasoning"]
+        assert "LIMITED DATA" in rec["signal_b_reasoning"]
+        assert "window only, not the full history" \
+            in rec["signal_b_reasoning"]
+
+    def test_empty_history_marked_no_visible_history(self, env):
+        vm, c = env
+        register_full_ok(vm, [])     # no txs at all for the address
+        mock_llm_direction(
+            vm, "Trust",
+            reasoning=("No history is visible in the fetched window, so "
+                       "this reading means nothing negative is VISIBLE, "
+                       "not that the history was checked and is clean."))
+        rec = reconcile(vm, c)
+        assert rec["history_coverage"] == "no_visible_history"
+        assert "coverage gap" in rec["signal_a_reasoning"]
+        assert "VISIBLE" in rec["signal_b_reasoning"]
+
+    def test_partial_window_llm_must_acknowledge_limit(self, env):
+        vm, c = env
+        register_full_ok(vm, busy_wallet_txs(now_ts(), 100))
+        # LLM tries to issue a full-history-sounding verdict without
+        # acknowledging the partial window -> rejected, fail-safe.
+        mock_llm_direction(
+            vm, "Trust",
+            reasoning=("The wallet's complete and total history is "
+                       "absolutely spotless with no risk whatsoever."))
+        rec = reconcile(vm, c)
+        assert rec["final_verdict"] == "Undetermined"
+        assert "partial_data_ack_missing" in rec["final_reasoning"]
 
 
 def first_requested(vm, c):

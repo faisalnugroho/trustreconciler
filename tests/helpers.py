@@ -15,6 +15,35 @@ sys.path.insert(0, "scripts")
 
 CONTRACT = "contracts/TrustReconciler.py"
 
+# --- Dataset pin for TESTS (steward fix 4) --------------------------------
+# Tests deploy the contract with their OWN pin (a fake 40-hex commit and
+# the keccak256 of the MOCKED dataset payload). This proves the pin
+# machinery end-to-end (URL construction, hash verification, ref
+# recording) without depending on repo data contents, and lets tests
+# poison the dataset content to prove hash-mismatch detection.
+#
+# NOTE: keccak is computed via tests/vendor_keccak.py — a byte-identical
+# vendored copy of the SDK's genlayer/py/keccak.py (Apache-2.0, ctz/
+# keccak — the same file the contract itself uses). We deliberately do
+# NOT import genlayer here: importing the SDK from the test helpers at
+# module scope poisons pytest's module lifecycle (gltest evicts genlayer.*
+# per-test via VMContext teardown; a pre-test import breaks the
+# "only one contract is allowed" reset between tests and every env
+# fixture after the first errors out).
+TEST_DATASET_COMMIT = "0" * 39 + "1"          # fake but valid 40-hex sha
+TEST_DATASET_URL = ("https://raw.githubusercontent.com/faisalnugroho/"
+                    "trustreconciler/" + TEST_DATASET_COMMIT
+                    + "/data/phishing_labels.json")
+
+import vendor_keccak  # noqa: E402  (vendored, byte-identical to SDK)
+
+
+def _test_dataset_keccak(payload_text):
+    """keccak256 of the mocked dataset body — computed exactly the way
+    the contract computes it (over the decoded UTF-8 body text)."""
+    return vendor_keccak.Keccak256(
+        payload_text.encode("utf-8")).hexdigest()
+
 # Deterministic test identities (checksummed; EIP-55 valid).
 def _ck(hex40):
     return to_checksum_address(hex40)
@@ -29,8 +58,7 @@ FLAGGED_FUNDER = _ck("0x" + "bb" * 20)          # in the label set
 REQUESTER = b"\xdd" * 20
 REQUESTER_HEX = _ck("0x" + "dd" * 20)
 
-DATASET_URL_PREFIX = ("https://raw.githubusercontent.com/faisalnugroho/"
-                      "trustreconciler/main/data/phishing_labels.json")
+DATASET_URL_PREFIX = TEST_DATASET_URL
 
 ETH_API = "https://eth.blockscout.com/api"
 BASE_API = "https://base.blockscout.com/api"
@@ -107,6 +135,16 @@ def dataset_payload(addresses=None):
             "schema": "test"}
 
 
+# The canonical mocked-dataset body text and its pin: tests deploy the
+# contract pinned to THIS keccak (computed over the exact body text the
+# mocks serve), so hash verification passes on happy paths and fails
+# deterministically on poisoned bodies.
+DATASET_BODY = json.dumps(dataset_payload())
+TEST_DATASET_KECCAK = _test_dataset_keccak(DATASET_BODY)
+TEST_DATASET_REF = (TEST_DATASET_COMMIT[:12] + ":"
+                    + TEST_DATASET_KECCAK[:16])
+
+
 # ---------------------------------------------------------------------------
 # Wallet fixtures for each scenario
 # ---------------------------------------------------------------------------
@@ -149,6 +187,17 @@ def flagged_funding_wallet_txs(now):
     for i in range(5):
         cp = _ck("0x" + format(0x5500 + i, "04x") + "0" * 36)
         ts = now - 80 * 86400 + i * 7 * 86400
+        txs.append(tx(TARGET_WALLET.lower(), cp.lower(), ts))
+    return txs
+
+
+def busy_wallet_txs(now, n=100):
+    """100 native txs — fills the fetch page cap exactly, forcing
+    history_coverage='partial_window' (steward fix 4)."""
+    txs = []
+    for i in range(n):
+        cp = _ck("0x" + format(0x7700 + i % 20, "04x") + "0" * 36)
+        ts = now - 400 * 86400 + i * 3 * 86400
         txs.append(tx(TARGET_WALLET.lower(), cp.lower(), ts))
     return txs
 

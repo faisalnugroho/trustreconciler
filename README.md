@@ -45,9 +45,19 @@ verifiable — which is what GenLayer consensus equivalence requires.
 
 **Phishing labels (inside the contract):** our own repo-hosted snapshot of
 the public `forta-network/labelled-datasets` Fake_Phishing address set,
-synced off-chain by `scripts/sync_dataset.py` and pinned at a public
-immutable-per-commit URL. The contract never fetches the upstream dataset
-live per request.
+synced off-chain by `scripts/sync_dataset.py`. The snapshot is **pinned per
+deployment** (steward review fix, Sep 2026): the contract fetches it from
+an immutable-by-commit `raw.githubusercontent.com` URL that embeds a
+40-hex git commit SHA (moving refs like `main`/`HEAD` are rejected by the
+constructor — there is no "fetch latest" path), AND re-computes the
+keccak256 of the fetched bytes on every run, comparing it to the expected
+hash supplied at deployment — so a moved, replaced, or tampered dataset
+fails the run explicitly (`dataset_hash_mismatch` → `Undetermined`)
+instead of silently changing verdicts. Every stored record embeds
+`dataset_ref = "<commit12>:<keccak16>"` so each verdict is auditable
+against the exact dataset bytes it was judged with; the active pin is
+readable on-chain via `get_dataset_pin()`. The contract never fetches
+the upstream dataset live per request.
 
 **Etherscan API key (off-chain only):** `ETHERSCAN_API_KEY` is used
 exclusively by off-chain tooling — dataset-sync cross-checks and smoke-test
@@ -63,7 +73,10 @@ and this project does not aggregate those commercial APIs.
 
 Deployed and live:
 
-- **Contract (Studionet):** [0x54cf383f888Ef2cB50B70FA06Fa5042938CcC621](https://explorer-studio.genlayer.com/address/0x54cf383f888Ef2cB50B70FA06Fa5042938CcC621) — 32/32 direct-mode tests, genvm-lint ok, 3/3 live consensus smoke scenarios (`docs/deployment_log.json`).
+- **Contract (Studionet):** see `docs/deployment_log.json` for the current
+  address and tx hashes — 60/60 direct-mode tests (incl. the four steward
+  review fixes), genvm-lint ok (3 view + 2 write methods, 2 constructor
+  params), live consensus smoke scenarios.
 - **dApp (GitHub Pages):** [faisalnugroho.github.io/trustreconciler](https://faisalnugroho.github.io/trustreconciler/)
 - **Submission draft:** `docs/SUBMISSION_DRAFT.md`
 
@@ -87,21 +100,72 @@ Local development uses a git-ignored `.env` file at the repo root (see
   live and consistent with Ethereum mainnet. Consequences: (a) Signal A's
   wallet-age metric is computed from the oldest transaction *visible on the
   instance* — for wallets with a coverage gap this underestimates true age;
-  (b) a genuinely old wallet may be scored as if it were fresh. Mitigation:
-  this is a data-source limitation, not a logic failure — the contract
-  honestly scores the data it can verifiably fetch, and the reasoning fields
-  always state which evidence the scores were computed from. Smoke tests
-  use wallets whose history was manually verified to be present on the same
-  instance.
+  (b) a genuinely old wallet may be scored as if it were fresh. Mitigation
+  (steward review fix, Sep 2026): every record now carries an explicit
+  `history_coverage` field — `full_window`, `partial_window` (the fetch
+  page cap was hit), or `no_visible_history` (coverage gap) — and BOTH
+  signal reasonings append a "LIMITED DATA" clause stating the verdict
+  rests on a bounded window / no visible history, so a verdict can never
+  present itself as full-history analysis. The arbitration prompt receives
+  the same caveat and the LLM's reasoning is validated to acknowledge
+  partial data on partial windows (a full-history-sounding verdict on a
+  bounded window is rejected → `Undetermined`). Smoke tests use wallets
+  whose history was manually verified to be present on the same instance.
 - **First-100-transaction window:** the contract fetches the first 100
   native + 100 token transfers (`sort=asc`) to keep validator fetches
   comparable and payloads bounded. For very high-volume wallets this is a
   sample, not the full history; signals are computed on that sample and
-  the record states the window size.
+  the record states the window size AND the machine-readable
+  `history_coverage` classification above.
 - **Phishing labels are a snapshot:** the Fake_Phishing set is synced
   periodically from the public forta-network labelled-datasets repository;
   addresses newly flagged after the last sync are unknown to the contract
-  until the next sync.
+  until the next sync. Each sync commits a new immutable dataset version
+  and a NEW deployment pins it (commit + keccak256) — the previous
+  deployment's records keep referencing the exact dataset they were
+  judged with via their stored `dataset_ref`.
+
+## Steward review fixes (Sep 2026 — "Action needed" response)
+
+Four issues raised by the Builder Portal steward review, all fixed with
+regression tests (direct-mode suite: 60/60):
+
+1. **Re-evaluation chain pinning.** A wallet's record is permanently
+   bound to the chain of its FIRST reconciliation. Both entrypoints
+   (`request_reconciliation` renewals and `request_reevaluation`)
+   reject a different chain with an explicit `chain_mismatch:pinned_to:<chain>`
+   error BEFORE the non-deterministic block — no silent overwrite of an
+   eth record with base data (or vice versa). `get_cooldown_info` exposes
+   the pinned chain so frontends enforce it too (the dApp locks the
+   chain selector). Tests: `TestStewardFixChainPinning` (6 tests).
+2. **Provable record mutation after re-evaluation.** Re-evaluations are
+   proven non-no-op: `last_updated` and `requested_at` bump,
+   `reevaluation_count` increments, AND when the new data differs, at
+   least one substantive field (signal score / verdict / reasoning)
+   must change — asserted against the record COMMITTED TO STORAGE (read
+   back via `get_reconciliation`), not just the return value. Both a
+   success case (flagged funder gone → Aligned-Risky →
+   Aligned-Trustworthy) and a failure case (API down → Undetermined
+   overwrite) are covered. Tests: `TestStewardFixRecordMutation` (2
+   tests).
+3. **Cooldown uniform for all verdicts including Undetermined.** The
+   on-chain cooldown was already uniform (both entrypoints guard on the
+   same `last_updated` regardless of verdict family); the bypass that
+   DID exist was in the dApp UI, which enabled the re-check button
+   immediately on Undetermined records (leading to guaranteed-to-revert
+   consensus rounds). Removed: the UI now shows the same countdown for
+   Undetermined as every other verdict, and the contract-side uniformity
+   is now explicitly regression-tested. Tests:
+   `TestStewardFixUndeterminedCooldown` (3 tests).
+4. **Dataset pinning + partial-history honesty.** Dataset fetched from
+   an immutable-by-commit URL (constructor rejects moving refs;
+   per-run keccak256 content verification; every record stores
+   `dataset_ref`) — see "Data sources". Partial/empty history windows
+   are explicit in the data itself: `history_coverage` field,
+   LIMITED-DATA clauses in both signal reasonings, prompt caveat, and a
+   validation gate that rejects full-history-sounding LLM verdicts on
+   partial windows. Tests: `TestStewardFixDatasetPinning` (11) +
+   `TestStewardFixPartialHistoryHonesty` (4).
 
 ## Repository layout
 

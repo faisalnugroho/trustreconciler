@@ -288,7 +288,7 @@ footer .fl{font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.9}
 'use strict';
 
 /* ---------- config ---------- */
-const CONTRACT = '0x54cf383f888Ef2cB50B70FA06Fa5042938CcC621';
+const CONTRACT = '0x3c639D84c6B1463eaFE91EA0A2Db8d767e742c2B';
 const EXPLORER_ADDR = 'https://explorer-studio.genlayer.com/address/';
 const EXPLORER_TX = 'https://explorer-studio.genlayer.com/tx/';
 const REEVAL_COOLDOWN_S = 3600; // must match contract constant (1 h anti-spam)
@@ -503,11 +503,22 @@ function renderRecord(rec, wallet){
   $('verdict').className = 'verdict' + (undet ? ' undet' : '');
   $('v-word').textContent = rec.final_verdict;
   $('v-conf').textContent = 'confidence: ' + (rec.confidence || '—');
+  // Coverage honesty (steward fix 4): show whether the verdict rests on
+  // the full visible window, a bounded first-100 sample, or nothing
+  // visible at all — never let the UI imply full-history analysis.
+  const covTxt = {
+    full_window: 'full visible window',
+    partial_window: 'partial window (first 100 txs)',
+    no_visible_history: 'no visible history (coverage gap)',
+    unavailable: 'unavailable (fetch failed)'
+  };
   $('v-metrics').innerHTML =
     '<span>chain <b>' + esc(rec.chain || currentChain) + '</b></span>' +
     '<span>divergence <b>' + (rec.divergence_detected ? 'yes' : 'no') + '</b></span>' +
     '<span>re-evals <b>' + esc(rec.reevaluation_count ?? 0) + '</b></span>' +
-    '<span>updated <b>' + new Date(Number(rec.last_updated || 0) * 1000).toISOString().slice(0,16).replace('T',' ') + '</b></span>';
+    '<span>history <b>' + esc(covTxt[rec.history_coverage] || rec.history_coverage || '—') + '</b></span>' +
+    '<span>updated <b>' + new Date(Number(rec.last_updated || 0) * 1000).toISOString().slice(0,16).replace('T',' ') + '</b></span>' +
+    '<span>dataset <b>' + esc(rec.dataset_ref || '—') + '</b></span>';
   $('v-reason').innerHTML = esc(rec.final_reasoning || '—') +
     '<span class="src">evidence: ' + esc(rec.data_sources || 'on-chain fetches') + '</span>';
 
@@ -519,19 +530,25 @@ function updateRecheckState(rec){
   const btn = $('btn-recheck');
   const note = $('cooldown-note');
   if (!rec || !rec.final_verdict){ btn.disabled = true; note.textContent = ''; return; }
-  if (rec.final_verdict === 'Undetermined'){
-    btn.disabled = false; note.textContent = 'Undetermined — re-run any time to retry data fetch';
-    return;
-  }
+  // Steward fix 3: cooldown applies to Undetermined EXACTLY like every
+  // other verdict — the old "retry any time" bypass is removed. The
+  // button obeys the same last_updated the contract enforces, for ALL
+  // verdict families; the contract is the source of truth and rejects
+  // anything earlier anyway.
   const last = Number(rec.last_updated || 0) * 1000;
   const elapsed = (Date.now() - last) / 1000;
   if (elapsed < REEVAL_COOLDOWN_S){
     btn.disabled = true;
     const remain = Math.ceil((REEVAL_COOLDOWN_S - elapsed) / 3600);
-    note.textContent = 're-evaluation opens in ~' + remain + ' h (anti-spam cooldown)';
+    const who = rec.final_verdict === 'Undetermined'
+      ? 'data-fetch failed — same cooldown as any verdict; retry opens in ~'
+      : 're-evaluation opens in ~';
+    note.textContent = who + remain + ' h (anti-spam cooldown)';
   } else {
     btn.disabled = false;
-    note.textContent = 'cooldown passed — re-check available';
+    note.textContent = rec.final_verdict === 'Undetermined'
+      ? 'cooldown passed — retry the data fetch'
+      : 'cooldown passed — re-check available';
   }
 }
 setInterval(() => { if (currentRecord) updateRecheckState(currentRecord); }, 30000);
@@ -539,11 +556,26 @@ setInterval(() => { if (currentRecord) updateRecheckState(currentRecord); }, 300
 /* ---------- actions ---------- */
 async function doReconcile(){
   const raw = $('wallet-input').value.trim();
-  const chain = $('chain-select').value;
+  let chain = $('chain-select').value;
   const w = normalizeAddress(raw);
   if (!w) return toast('Enter a valid 0x… 20-byte address', true);
   if (w !== raw) $('wallet-input').value = w;  // show the normalized form
   if (busy) return;
+  // Steward fix 1: a wallet's record is PINNED to the chain of its first
+  // reconciliation. If an on-chain record already exists, check its
+  // pinned chain first and refuse a different one client-side (the
+  // contract rejects it anyway with chain_mismatch — this avoids a
+  // guaranteed-to-revert consensus round).
+  try {
+    const existing = parseJsonSafe(await readContract('get_cooldown_info', [w]));
+    if (existing && existing.wallet_known && existing.chain){
+      if (chain !== existing.chain){
+        $('chain-select').value = existing.chain;
+        return toast('This wallet is pinned to chain “' + existing.chain +
+          '” by its first reconciliation — selector locked to it (re-evaluating on another chain is rejected by the contract)', true);
+      }
+    }
+  } catch { /* cooldown-info read is best-effort; the contract enforces the real guard */ }
   busy = true;
   $('btn-reconcile').disabled = true;
   try {
