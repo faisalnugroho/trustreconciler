@@ -1,0 +1,51 @@
+{
+ "wallet": "0x930B88a592a045C428f3d99f7f3E5f95e3967508",
+ "chain": "eth",
+ "tx_hash": "0x583f35be952c6276b4b95a712af252546e7e4d43ade4b607f822e5ccf4973abf",
+ "execution_result": "SUCCESS",
+ "before": {
+  "wallet_address": "0x930B88a592a045C428f3d99f7f3E5f95e3967508",
+  "chain": "eth",
+  "requester": "0xa25f5a81Fb60b45207f2867346A8E0bAFaA2b836",
+  "requested_at": 1788486192,
+  "signal_a_score": 15,
+  "signal_a_reasoning": "no conservative risk factors found: established age, organic diversity, no flagged contact; LIMITED DATA: verdict based on the first 100 txs only (partial history window, not the wallet's full record)",
+  "signal_b_score": 85,
+  "signal_b_reasoning": "zero contact with phishing-flagged addresses across all 88 counterparties; high counterparty diversity: 88 unique addresses; consistent history: only 0% failed txs; LIMITED DATA: zero flagged contact verified within the first 100-tx window only, not the full history",
+  "divergence_detected": false,
+  "final_verdict": "Aligned-Trustworthy",
+  "confidence": "Medium",
+  "final_reasoning": "The models diverge in their interpretation of the limited data window: Model A treats the partial history as a risk factor, while Model B treats the absence of negative evidence as a basis for trust. Given the measured facts\u2014zero flagged contacts, high counterparty diversity, and no failed transactions\u2014the trust-optimistic philosophy is better supported by the actual evidence in this sample. However, the verdict rests on partial data from a bounded transaction window, not the wallet's full history.",
+  "data_sources": "blockscout-eth (module=account: txlist, tokentx, balance; Etherscan-compatible keyless public API); forta-network labelled-datasets Fake_Phishing snapshot (pinned): https://raw.githubusercontent.com/faisalnugroho/trustreconciler/53246b6bb348b41b4336657dd9ae1eaf8dfc43d5/data/phishing_labels.json",
+  "dataset_ref": "53246b6bb348:ee0076523ad355d5",
+  "history_coverage": "partial_window",
+  "last_updated": 1788486192,
+  "reevaluation_count": 1
+ },
+ "after": {
+  "wallet_address": "0x930B88a592a045C428f3d99f7f3E5f95e3967508",
+  "chain": "eth",
+  "requester": "0xa25f5a81Fb60b45207f2867346A8E0bAFaA2b836",
+  "requested_at": 1788489860,
+  "signal_a_score": 15,
+  "signal_a_reasoning": "no conservative risk factors found: established age, organic diversity, no flagged contact; LIMITED DATA: verdict based on the first 100 txs only (partial history window, not the wallet's full record)",
+  "signal_b_score": 85,
+  "signal_b_reasoning": "zero contact with phishing-flagged addresses across all 88 counterparties; high counterparty diversity: 88 unique addresses; consistent history: only 0% failed txs; LIMITED DATA: zero flagged contact verified within the first 100-tx window only, not the full history",
+  "divergence_detected": false,
+  "final_verdict": "Aligned-Trustworthy",
+  "confidence": "High",
+  "final_reasoning": "Trust: within the measured window there are no phishing-related signals at all (0 flagged counterparty hits and 0 flagged funding hits), the wallet shows mature age (1302 days), broad activity across 88 unique counterparties, and clean execution with 0% failed transactions, which together support an organic usage pattern rather than abuse. The models do not materially diverge here; both are grounded in the same clean evidence. This verdict rests on partial data only, because the analysis covers a limited first-100 native plus first-100 token transfer window, not the wallet\u2019s full history.",
+  "data_sources": "blockscout-eth (module=account: txlist, tokentx, balance; Etherscan-compatible keyless public API); forta-network labelled-datasets Fake_Phishing snapshot (pinned): https://raw.githubusercontent.com/faisalnugroho/trustreconciler/53246b6bb348b41b4336657dd9ae1eaf8dfc43d5/data/phishing_labels.json",
+  "dataset_ref": "53246b6bb348:ee0076523ad355d5",
+  "history_coverage": "partial_window",
+  "last_updated": 1788489860,
+  "reevaluation_count": 2
+ },
+ "checks": {
+  "reevaluation_count_incremented": true,
+  "last_updated_bumped": true,
+  "requested_at_bumped": true,
+  "some_substantive_field_changed_when_data_differed": true,
+  "stored_record_matches_returned": true
+ }
+}
