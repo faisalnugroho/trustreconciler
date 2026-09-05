@@ -1,4 +1,80 @@
-# Draft balasan ke steward (TrustReconciler — round 2, frontend fixes)
+# Draft balasan ke steward (TrustReconciler — round 3, window + UI lock)
+
+Round 3 feedback (both points) — fixed, tested, and proven live below.
+Contract v3 (fresh deploy, same dataset pin):
+https://explorer-studio.genlayer.com/address/0xc88eCa8285929F25e231e0D2c78d1fDfC339EEaF
+Repo: https://github.com/faisalnugroho/trustreconciler (commit c2f3711)
+dApp: https://faisalnugroho.github.io/trustreconciler/
+
+---
+
+Thank you — both round-3 items are fixed, regression-tested, and proven
+with live full-consensus runs on the new contract.
+
+## 1. Evidence completeness beyond the first 100 txs (paginated window)
+
+The history fetch is now PAGINATED with a FIXED plan: 3 txlist pages +
+2 tokentx pages of 100 (`sort=asc`) — 300 native + 200 token txs. The
+page count is a constant executed identically by the leader and every
+validator (never "until exhausted", which would be node-dependent and
+break equivalence); an empty beyond-last page ends the history early
+without failing the run, while any HTTP error on ANY page still fails
+the whole run Undetermined before the LLM.
+
+Live proofs on the v3 contract (real consensus, not mocks):
+
+- The case you asked for — a wallet whose history FITS the window:
+  `0xEF6FD3e9E3E86f2a576E3Fd8Ee872cf1AeEa2E06` has 172 native txs
+  (short page-2 drains the history before the 3-page cap) + 124 token
+  transfers, manually verified on the same Blockscout instance the
+  contract fetches from. The contract classifies it
+  `history_coverage=full_window`:
+  https://explorer-studio.genlayer.com/tx/0xefc1f79e5bec921d3bea68194c2034e1876fe42c4bb478b532c94121458bd5a4
+  (Divergent-Resolved-Trust, A=60/B=85, 66 s — the final reasoning
+  itself cites "full-window coverage" among the deciding factors).
+  Under the old first-100 contract this exact wallet was the problem
+  case: cut at 100 txs and mislabeled partial_window.
+- The honest-direction control — a >window wallet still classified
+  partial: the S1 smoke wallet (1,303 days old) returns
+  `partial_window` with LIMITED-DATA clauses in both signal reasonings:
+  https://explorer-studio.genlayer.com/tx/0xac19e315e864b5b2f8da4ca7bc79a9f3cacf74d72e28808e978698d7beea1468
+  (note the extended window concretely widened the evidence base: 157
+  unique counterparties visible vs 88 under the old window).
+- Fresh-wallet divergence case still resolves end to end:
+  https://explorer-studio.genlayer.com/tx/0xb9e35df6017242544cbbfb7d828e1ef66e80c9caaea27c356cdc3bd16c31b769
+  (full_window, Divergent-Resolved-Trust).
+
+Regression tests: `TestStewardFixPaginatedWindow` (10 tests, incl. the
+100 < txs < 300 → full_window case and HTTP-500 landmines planted on
+later pages proving the fixed page plan is actually fetched).
+
+## 2. Chain selector locked after a record is loaded
+
+Once a record is displayed (fresh reconciliation, opening an existing
+one, or the Reconcile pre-check detecting a pinned wallet), the chain
+dropdown is visually replaced by a "🔒 chain locked to: <chain>" badge;
+the selector re-activates only when the user moves to a different
+wallet address. This is display-only: the transaction logic is
+untouched — re-eval still derives the chain from the stored record
+(round-2 fix 1; regression test asserts doRecheck's send path never
+consults the lock UI). Verified live with screenshots (badge replaces
+dropdown on record load; selector returns for a different address) —
+`artifacts/live_chainlock_badge.png` +
+`artifacts/live_chainlock_unlocked.png`.
+
+Also re-proven on the v3 contract: the chain-flip revert — re-eval of
+the base-pinned wallet with chain=eth shows
+`AssertionError: chain_mismatch:pinned_to:base` in the leader stderr,
+MAJORITY_AGREE (5 validators), execution ERROR:
+https://explorer-studio.genlayer.com/tx/0x1fcb427d91e263e8de67d51a738bdee6c3058f578798ad16f9d55f44815431f7
+
+Full suite: 90/90 (70 contract + 20 frontend regression).
+docs/deployment_log.json keeps the complete audit trail (v2 runs kept
+for history).
+
+---
+
+# (round 2 below — kept for reference)
 
 Round 1 (contract-side: chain pinning, cooldown, dataset) — accepted.
 Round 2 items (both frontend) — fixed, tested, proven live below.

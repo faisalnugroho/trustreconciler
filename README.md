@@ -180,7 +180,11 @@ live — see `docs/SUBMISSION_DRAFT.md` "Steward round-3 fixes"):
    a regression test asserting `doRecheck`'s send path never consults
    the lock UI), and genuinely NEW wallets still pick their chain
    normally. Verified live with screenshots (badge replaces dropdown on
-   record load; selector returns for a different address).
+   record load; selector returns for a different address) —
+   `artifacts/live_chainlock_badge.png` +
+   `artifacts/live_chainlock_unlocked.png` (SW record loaded with the
+   badge replacing the dropdown; typing a different wallet re-activates
+   the selector).
 
 Adversarial QA round-3 (7 production scenarios executed against the live
 dApp — double-click races, mid-consensus refresh, signer switches, chain

@@ -235,7 +235,11 @@ address. Display-only: the transaction logic is untouched (re-eval still
 derives the chain from the stored record, per round-2 fix 1, with a
 regression test asserting `doRecheck`'s send path never consults the
 lock UI). Verified live with screenshots (badge replaces dropdown on
-record load; selector returns for a different address).
+record load; selector returns for a different address) —
+`artifacts/live_chainlock_badge.png` (SW record loaded: badge visible,
+dropdown hidden, full_window verdict rendered) and
+`artifacts/live_chainlock_unlocked.png` (typing a different wallet
+re-activates the selector).
 
 ---
 
