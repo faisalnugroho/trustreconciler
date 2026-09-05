@@ -158,9 +158,10 @@ Partial-history honesty:
   `full_window`, `partial_window` (fetch page cap hit — bounded sample),
   or `no_visible_history` (mirror coverage gap).
 - On partial/empty windows BOTH signal reasonings append explicit
-  "LIMITED DATA" clauses (e.g. "verdict based on the first 100 txs
-  only"; "zero flagged contact verified within the first 100-tx window
-  only"; "absence of data is NOT proof of a new or inactive wallet").
+  "LIMITED DATA" clauses (e.g. "verdict based on the first 300 native +
+  200 token txs only"; "zero flagged contact verified within the
+  fetched window only"; "absence of data is NOT proof of a new or
+  inactive wallet").
 - The arbitration prompt carries the same DATA WINDOW CAVEAT, and the
   arbiter output is validated: on a partial window the final reasoning
   MUST acknowledge partial data, otherwise the verdict is rejected

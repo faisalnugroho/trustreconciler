@@ -1,10 +1,11 @@
 # TrustReconciler — Builder Portal Submission Draft (Projects track)
 
 **Category:** Projects
-**Status:** steward "Action needed" items fixed (Sep 2026) — awaiting Fai's resubmit
+**Status:** steward round-2 + round-3 fixes complete (Sep 2026), SW
+window-evidence live proof done — awaiting Fai's resubmit
 **Repo:** https://github.com/faisalnugroho/trustreconciler
 **Live dApp:** https://faisalnugroho.github.io/trustreconciler/
-**Contract (Studionet, v2 — post-fix redeploy):** https://explorer-studio.genlayer.com/address/0x3c639D84c6B1463eaFE91EA0A2Db8d767e742c2B
+**Contract (Studionet, v3 — round-3 paginated-window deploy):** https://explorer-studio.genlayer.com/address/0xc88eCa8285929F25e231e0D2c78d1fDfC339EEaF
 
 ---
 
@@ -145,9 +146,10 @@ contract carries it.
   not full history) | `no_visible_history` (mirror coverage gap — absence
   of data proves nothing about true wallet age/activity).
 - BOTH signal reasonings append an explicit "LIMITED DATA" clause on
-  partial/empty windows (e.g. "verdict based on the first 100 txs only";
-  "zero flagged contact verified within the first 100-tx window only";
-  "absence of data is NOT proof of a new or inactive wallet").
+  partial/empty windows (e.g. "verdict based on the first 300 native +
+  200 token txs only"; "zero flagged contact verified within the
+  fetched window only"; "absence of data is NOT proof of a new or
+  inactive wallet").
 - The arbitration prompt carries the same DATA WINDOW CAVEAT, and the
   arbiter output is **validated**: on a partial window the final
   reasoning MUST acknowledge partial data — a full-history-sounding
@@ -160,14 +162,94 @@ constructor rejections of `main`/`HEAD`/`master`/short/empty pins and
 the hash-mismatch fail-safe) + `TestStewardFixPartialHistoryHonesty`
 (4 tests, incl. the LLM-acknowledgment gate).
 
+## Steward round-3 fixes (Sep 2026 — both "Declined" feedback points)
+
+The round-3 deployment is a fresh v3 contract on Studionet:
+`0xc88eCa8285929F25e231e0D2c78d1fDfC339EEaF` (deploy tx
+[`0xcf008c…faa55f`](https://explorer-studio.genlayer.com/tx/0xcf008c4eec2f5b8319070a0e601f4285fcfbf9a1d03eda14bbe6682ef2faa55f),
+same dataset pin `53246b6bb348:ee0076523ad355d5`). All four scenarios
+below ran live with full consensus on this contract.
+
+### Fix 5 — Paginated history window (300 native + 200 token txs)
+
+The history fetch is now PAGINATED over the Blockscout
+Etherscan-compatible API with a FIXED plan: **3 txlist pages + 2
+tokentx pages** of 100 (`sort=asc`) — 300 native + 200 token txs. The
+page count is a constant, so the leader and every validator execute the
+identical fetch plan (never "until exhausted", which would make the
+window node-dependent and break equivalence); an empty beyond-last page
+(the API's documented no-more-transactions response) simply ends the
+history early without failing the run, while any HTTP error on ANY page
+still fails the whole run Undetermined before the LLM (fail-safe
+unchanged). Bounds rationale (measured live): ~100 KB per txlist page
+vs up to ~10 MB per tokentx page — the 3+2 plan balances coverage
+against the non-deterministic block's time budget on every validator.
+
+**Live proofs (full consensus, v3 contract):**
+
+- **S1 (whale, ≥300 txs → honest partial):** tx
+  [`0xac19e3…1468`](https://explorer-studio.genlayer.com/tx/0xac19e315e864b5b2f8da4ca7bc79a9f3cacf74d72e28808e978698d7beea1468)
+  — the S1 smoke wallet (age ~3.6 yr, 88 unique counterparties) returns
+  `history_coverage=partial_window` with LIMITED-DATA clauses, exactly
+  as under the old window: extending the window never inflates coverage
+  claims.
+- **S2 (fresh wallet, <window → full):** tx
+  [`0xb9e35d…1b769`](https://explorer-studio.genlayer.com/tx/0xb9e35df6017242544cbbfb7d828e1ef66e80c9caaea27c356cdc3bd16c31b769)
+  — `history_coverage=full_window`, the fresh-wallet divergence case
+  still resolves end to end under the paginated fetch.
+- **SW (window-evidence wallet — the steward-requested case):** tx
+  [`0xefc1f7…d5a4`](https://explorer-studio.genlayer.com/tx/0xefc1f79e5bec921d3bea68194c2034e1876fe42c4bb478b532c94121458bd5a4)
+  — wallet `0xEF6FD3…2E06` has **172 native txs** (a short page-2 ends
+  the drain before the 3-page cap) + **124 token transfers** (<200
+  cap), manually verified on the same Blockscout instance. The contract
+  classifies it **`full_window`** — under the old first-100 contract
+  this wallet was exactly the case the steward flagged: history cut at
+  100 txs and mislabeled `partial_window`. Verdict
+  `Divergent-Resolved-Trust` (A=60 / B=85, Medium, 66 s), final
+  reasoning explicitly cites "full-window coverage" among the
+  deciding factors.
+- **S4 (chain-flip regression under the new fetch code):** the
+  base-pinned S3 wallet (seeded on the v3 contract via tx
+  [`0x2d8956…d2ad9`](https://explorer-studio.genlayer.com/tx/0x2d8956516fe711bd296d0d8e21b33cd2e1bb20846cc6445eb9b732e266fd2ad9),
+  which itself demonstrates the live-API fail-safe: base.blockscout
+  returned HTTP 500 again → `Undetermined`, `coverage=unavailable`) was
+  re-evaluated with `chain=eth`. The leader revert is visible in full:
+  tx
+  [`0x1fcb42…31f7`](https://explorer-studio.genlayer.com/tx/0x1fcb427d91e263e8de67d51a738bdee6c3058f578798ad16f9d55f44815431f7)
+  — `MAJORITY_AGREE` (5 validators), execution ERROR with
+  `AssertionError: chain_mismatch:pinned_to:base` in the leader stderr
+  — the chain-pinning logic holds under the new paginated fetch code.
+
+Tests: `TestStewardFixPaginatedWindow` (10 tests, incl. the
+steward-requested 100 < txs < 300 → `full_window` case and HTTP-500
+landmines on later pages proving the fixed page plan is actually
+fetched).
+
+### Fix 6 — Chain selector locked after a record is loaded (UX only)
+
+Once a record is displayed — fresh reconciliation, opening an existing
+one, or the Reconcile pre-check detecting a pinned wallet — the chain
+dropdown is VISUALLY REPLACED by a "🔒 chain locked to: <chain>" badge.
+The selector only re-activates when the user moves to a different wallet
+address. Display-only: the transaction logic is untouched (re-eval still
+derives the chain from the stored record, per round-2 fix 1, with a
+regression test asserting `doRecheck`'s send path never consults the
+lock UI). Verified live with screenshots (badge replaces dropdown on
+record load; selector returns for a different address).
+
+---
+
 ## Evidence
 
 - **Repository:** https://github.com/faisalnugroho/trustreconciler
-- **Contract v2 (Studionet explorer, post-fix redeploy):**
+- **Contract v3 (Studionet explorer, round-3 deploy, paginated
+  window):** https://explorer-studio.genlayer.com/address/0xc88eCa8285929F25e231e0D2c78d1fDfC339EEaF
+- **Contract v2 (post-fix redeploy, superseded by v3):**
   https://explorer-studio.genlayer.com/address/0x3c639D84c6B1463eaFE91EA0A2Db8d767e742c2B
 - **Live dApp (GitHub Pages):** https://faisalnugroho.github.io/trustreconciler/
-- **Tests:** 60/60 gltest direct-mode tests pass (was 32; +28 covering the
-  four steward fixes) — chain pinning, record-mutation proofs, Undetermined
+- **Tests:** 90/90 gltest direct-mode tests pass (was 32; +58 covering
+  the steward fixes and paginated window) — chain pinning,
+  record-mutation proofs, Undetermined
   cooldown uniformity, dataset pinning (constructor rejections +
   content-hash fail-safe + audit ref) and partial-history honesty.
   `genvm-lint check --json` → `validate.ok: true` (3 view + 2 write
@@ -177,18 +259,22 @@ the hash-mismatch fail-safe) + `TestStewardFixPartialHistoryHonesty`
 
 All scenarios use **real mainnet wallet addresses** whose history was
 manually verified on the same Blockscout instance the contract fetches from
-(exact contract fetch window: first-100 `sort=asc`, txlist + tokentx).
+(exact contract fetch window: first 300 native / 200 token txs, `sort=asc`,
+paginated 100 per page).
 
 | # | Scenario | Wallet | Tx | Live result |
 |---|----------|--------|----|-------------|
-| S1 | Established clean wallet (age ~3.6 yr, 88 unique counterparties, 0 flagged contact) | `0x930B88…7508` | [`0x2be624…c516`](https://explorer-studio.genlayer.com/tx/0x2be62413cc0c4f9ce401d6f8d838506bfb064f2e52330cc30d0b44338f52c516) | `Aligned-Trustworthy`, A=15 / B=85, 75.5 s — record honestly flagged `history_coverage=partial_window` (≥100 txs) with LIMITED-DATA clauses in both signal reasonings and the arbiter reasoning acknowledging the limited window |
-| S2 | **Fresh wallet (4 days old, 6 clean counterparties) — the core divergence case** | `0xcF2Ae4…Db0` | [`0xb5c183…7b6`](https://explorer-studio.genlayer.com/tx/0xb5c1833b170ccc73e3568f6adcaad39ebd67e88e188fc26c36d0c5388f7317b6) | `Divergent-Resolved-Trust`, confidence Medium, A=55 / B=80, divergence=True, 106.1 s — arbiter reasoning names the root cause: "the wallet is only 4 days old: Model A treats this lack of history itself as risk, while Model B relies on the observed clean activity" |
-| S3 | **Live API failure** (base.blockscout returned genuine HTTP 500 during consensus) | `0x51FfD9…33bF` (chain=base) | [`0xcc7ce0…72ef`](https://explorer-studio.genlayer.com/tx/0xcc7ce0a7fab4f40241e070f5cedcad196a6b3307843f5702620ea7acfcd472ef) | `Undetermined`, fail-safe fired BEFORE LLM judgment: *"reconciliation stopped before any LLM judgment because required data could not be retrieved: txlist:AssertionError('http_500'); tokentx:AssertionError('http_500')"*, 60.8 s — record carries the dataset_ref even on failure |
+| S1 | Established wallet, >window history (age ~3.6 yr, 157 unique counterparties under the 300+200 window, 0 flagged contact) | `0x930B88…7508` | [`0xac19e3…1468`](https://explorer-studio.genlayer.com/tx/0xac19e315e864b5b2f8da4ca7bc79a9f3cacf74d72e28808e978698d7beea1468) | `Divergent-Resolved-Trust`, A=60 / B=85, Medium, 84 s — record honestly flagged `history_coverage=partial_window` (≥300 txs) with LIMITED-DATA clauses in both signal reasonings; note the extended window concretely changed the evidence base (157 counterparties visible vs 88 under the old first-100 window) and Signal A's burst-pattern finding (19 txs in 1 h) is adjudicated against the clean direct-evidence checks |
+| S2 | **Fresh wallet (5 days old, 6 clean counterparties) — the core divergence case** | `0xcF2Ae4…Db0` | [`0xb9e35d…1b769`](https://explorer-studio.genlayer.com/tx/0xb9e35df6017242544cbbfb7d828e1ef66e80c9caaea27c356cdc3bd16c31b769) | `Divergent-Resolved-Trust`, Medium, A=55 / B=80, `full_window`, 67.3 s — arbiter reasoning names the root cause: the models' conflicting readings of `wallet_age_days` (5 days): "Model A penalizes the lack of history while Model B rewards the clean record" |
+| SW | **Window-evidence wallet (172 native txs, 124 token txs — fits inside the 300+200 window)** | `0xEF6FD3…2E06` | [`0xefc1f7…d5a4`](https://explorer-studio.genlayer.com/tx/0xefc1f79e5bec921d3bea68194c2034e1876fe42c4bb478b532c94121458bd5a4) | `Divergent-Resolved-Trust`, Medium, A=60 / B=85, **`full_window`** — the steward-requested case: under the old first-100 contract this wallet was cut at 100 txs and mislabeled `partial_window`; the paginated window drains its whole visible history and classifies it honestly; 66 s |
+| S4 | **Live API failure + chain-flip regression (chain=base)** | `0x51FfD9…33bF` | seed [`0x2d8956…d2ad9`](https://explorer-studio.genlayer.com/tx/0x2d8956516fe711bd296d0d8e21b33cd2e1bb20846cc6445eb9b732e266fd2ad9), flip [`0x1fcb42…31f7`](https://explorer-studio.genlayer.com/tx/0x1fcb427d91e263e8de67d51a738bdee6c3058f578798ad16f9d55f44815431f7) | seed: base.blockscout returned genuine HTTP 500 during consensus → `Undetermined`, `coverage=unavailable`, fail-safe fired BEFORE LLM (85.9 s); flip: re-eval with chain=eth on the base-pinned record → `MAJORITY_AGREE` (5 validators) with execution ERROR, full leader stderr shows `AssertionError: chain_mismatch:pinned_to:base` — the pinning holds under the new fetch code (36.5 s) |
 
-S3 is a genuine network failure caught during the run, not a staged one —
-base.blockscout's account-txlist endpoint was returning HTTP 500 on that
-address during the consensus round (documented in
-`docs/deployment_log.json`).
+The seed of S4 is a genuine network failure caught during the run, not a
+staged one — base.blockscout's account-txlist endpoint was returning
+HTTP 500 on that address during the consensus round (documented in
+`docs/deployment_log.json`). Earlier first-100-window runs of the same
+scenarios on the superseded v2 contract remain in
+`docs/deployment_log.json` for audit history.
 
 Additional live on-chain evidence created through the deployed dApp and
 the mutation-proof script is visible on the contract's explorer page.
@@ -234,10 +320,14 @@ the mutation-proof script is visible on the contract's explorer page.
   to acknowledge partial data — a verdict can never present itself as
   full-history analysis. Smoke-test wallets were manually verified on the
   same instance.
-- **First-100-transaction window:** the contract fetches the first 100
-  native + 100 token transfers (`sort=asc`) to keep validator fetches
-  comparable and payloads bounded; for very high-volume wallets this is a
-  sample, not full history — now explicitly recorded per record.
+- **Bounded history window (paginated):** the contract fetches the first
+  **300 native txs (3 txlist pages) + 200 token transfers (2 tokentx
+  pages)** of 100 each (`sort=asc`) — a FIXED, identical fetch plan for
+  leader and every validator (deterministic page count, never
+  "until exhausted"). The bound keeps nondet-block runtime, gas, and
+  cross-validator payload sizes comparable; wallets beyond the window
+  are an explicitly recorded bounded sample (`partial_window`), never
+  presented as full history.
 - **Phishing labels are a periodic snapshot:** addresses newly flagged
   after the last sync are unknown to the contract until the next sync;
   each sync commits a new immutable dataset version and a NEW deployment
@@ -365,5 +455,5 @@ The transaction lifecycle was rebuilt end to end:
 `request_reevaluation` call site must pass the record-derived chain;
 the before-read must happen before the tx; FINALIZED (not ACCEPTED)
 wait; verified-mutation comparison strings; anomaly branch must not
-show success; no optimistic state probe. Full suite: **72/72 pass**
-(60 contract + 12 frontend).
+show success; no optimistic state probe. Full suite: **90/90 pass**
+(70 contract + 20 frontend, incl. 10 paginated-window tests).

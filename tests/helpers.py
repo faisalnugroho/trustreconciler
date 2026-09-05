@@ -6,6 +6,7 @@ pipeline; pytest.raises(AssertionError) for contract reverts (gltest
 direct-mode convention).
 """
 import json
+import re
 import sys
 import time
 
@@ -192,12 +193,28 @@ def flagged_funding_wallet_txs(now):
 
 
 def busy_wallet_txs(now, n=100):
-    """100 native txs — fills the fetch page cap exactly, forcing
-    history_coverage='partial_window' (steward fix 4)."""
+    """Fills the txlist fetch page exactly (100 txs = exactly page 1);
+    combined with the mock pattern this pins the paginated window
+    behavior."""
     txs = []
     for i in range(n):
         cp = _ck("0x" + format(0x7700 + i % 20, "04x") + "0" * 36)
         ts = now - 400 * 86400 + i * 3 * 86400
+        txs.append(tx(TARGET_WALLET.lower(), cp.lower(), ts))
+    return txs
+
+
+def window_wallet_txs(now, n=250, tag=0x7700):
+    """A wallet with 100 < n < 300 native txs — UNDER the new 300-tx
+    window: must classify history_coverage='full_window' (steward fix 5
+    coverage-evidence wallet). Every tx gets a UNIQUE clean
+    counterparty (no diversity penalty), spread over ~400 days — an
+    established, organically diverse wallet whose whole history fits
+    the new window."""
+    txs = []
+    for i in range(n):
+        cp = _ck("0x" + format(tag + i, "04x") + "0" * 36)
+        ts = now - 400 * 86400 + i * 86400
         txs.append(tx(TARGET_WALLET.lower(), cp.lower(), ts))
     return txs
 
@@ -215,6 +232,62 @@ def mock_web_ok(vm, target=TARGET_WALLET, txs=None, ttxs=None, balance=10**18,
                 {"status": 200, "body": json.dumps(ok_list(txs))})
     vm.mock_web("module=account&action=tokentx",
                 {"status": 200, "body": json.dumps(ok_list(ttxs))})
+    vm.mock_web("module=account&action=balance",
+                {"status": 200, "body": json.dumps(ok_balance(balance))})
+    vm.mock_web(DATASET_URL_PREFIX.replace(".", "\\."),
+                {"status": 200,
+                 "body": json.dumps(dataset_payload(dataset_addresses))})
+
+
+def mock_web_paginated(vm, txs, ttxs=None, balance=10**18,
+                       dataset_addresses=None, tx_pages=3, ttx_pages=2):
+    """Register page-aware mocks for the PAGINATED pipeline (steward
+    fix 5): distinct URL patterns per ?page=N so each mocked page can
+    carry its own slice, and an empty page beyond the last one returns
+    the real-world no-more-transactions shape
+    (status "0", result []) exactly like eth.blockscout does.
+
+    txs/ttxs are SLICED into pages of 100 by this helper; a short page
+    ends the wallet's visible history (contract breaks on short page).
+    tx_pages/ttx_pages control how many page mocks are REGISTERED —
+    register fewer than the contract fetches to prove the page plan is
+    fixed (an unregistered page -> MockNotFoundError -> Undetermined)."""
+    ttxs = ttxs or []
+    for page_no in range(1, tx_pages + 1):
+        sl = txs[(page_no - 1) * 100: page_no * 100]
+        if not sl and page_no > 1:
+            body = json.dumps(empty_list())
+        else:
+            body = json.dumps(ok_list(sl))
+        vm.mock_web("module=account&action=txlist.*page=" + str(page_no) + "&",
+                    {"status": 200, "body": body})
+    for page_no in range(1, ttx_pages + 1):
+        sl = ttxs[(page_no - 1) * 100: page_no * 100]
+        if not sl and page_no > 1:
+            body = json.dumps(empty_list())
+        else:
+            body = json.dumps(ok_list(sl))
+        vm.mock_web("module=account&action=tokentx.*page=" + str(page_no) + "&",
+                    {"status": 200, "body": body})
+    vm.mock_web("module=account&action=balance",
+                {"status": 200, "body": json.dumps(ok_balance(balance))})
+    vm.mock_web(DATASET_URL_PREFIX.replace(".", "\\."),
+                {"status": 200,
+                 "body": json.dumps(dataset_payload(dataset_addresses))})
+
+
+def mock_web_paginated_explicit(vm, tx_pages_bodies, ttx_pages_bodies,
+                                balance=10**18, dataset_addresses=None):
+    """Register EXPLICIT per-page bodies (dicts page_no -> body-text)
+    for surgical control: missing pages are NOT registered at all
+    (page-count proofs), short pages, oversized pages, etc. Bodies are
+    already-serialized JSON strings exactly as served."""
+    for page_no, body in tx_pages_bodies.items():
+        vm.mock_web("module=account&action=txlist.*page=" + str(page_no) + "&",
+                    {"status": 200, "body": body})
+    for page_no, body in ttx_pages_bodies.items():
+        vm.mock_web("module=account&action=tokentx.*page=" + str(page_no) + "&",
+                    {"status": 200, "body": body})
     vm.mock_web("module=account&action=balance",
                 {"status": 200, "body": json.dumps(ok_balance(balance))})
     vm.mock_web(DATASET_URL_PREFIX.replace(".", "\\."),

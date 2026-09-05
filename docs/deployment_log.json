@@ -126,5 +126,136 @@
     "s2_actual": "Divergent-Resolved-Trust",
     "s3_expected": "Undetermined (if base API failed during consensus)",
     "s3_actual": "Undetermined"
+  },
+  "round3": {
+    "deploy": {
+      "tx_hash": "0xcf008c4eec2f5b8319070a0e601f4285fcfbf9a1d03eda14bbe6682ef2faa55f",
+      "address": "0xc88eCa8285929F25e231e0D2c78d1fDfC339EEaF",
+      "dataset_pin": {
+        "commit_sha": "53246b6bb348b41b4336657dd9ae1eaf8dfc43d5",
+        "keccak256": "ee0076523ad355d5289b55757f61e1a7e555a4b0f952f305e9ddd8f36100fec7",
+        "url": "https://raw.githubusercontent.com/faisalnugroho/trustreconciler/53246b6bb348b41b4336657dd9ae1eaf8dfc43d5/data/phishing_labels.json",
+        "ref": "53246b6bb348:ee0076523ad355d5"
+      }
+    },
+    "s1": {
+      "tx_hash": "0xac19e315e864b5b2f8da4ca7bc79a9f3cacf74d72e28808e978698d7beea1468",
+      "wallet": "0x930B88a592a045C428f3d99f7f3E5f95e3967508",
+      "chain": "eth",
+      "secs": 84.0,
+      "execution_result": "SUCCESS",
+      "stderr": "",
+      "record": {
+        "wallet_address": "0x930B88a592a045C428f3d99f7f3E5f95e3967508",
+        "chain": "eth",
+        "requester": "0xa25f5a81Fb60b45207f2867346A8E0bAFaA2b836",
+        "requested_at": 1788602839,
+        "signal_a_score": 60,
+        "signal_a_reasoning": "burst pattern: 19 txs within 3600s; LIMITED DATA: verdict based on the first 300 native + 200 token txs only (partial history window, not the wallet's full record)",
+        "signal_b_score": 85,
+        "signal_b_reasoning": "zero contact with phishing-flagged addresses across all 157 counterparties; high counterparty diversity: 157 unique addresses; consistent history: only 0% failed txs; LIMITED DATA: zero flagged contact verified within the first 300-native-tx / 200-token-tx window only, not the full history",
+        "divergence_detected": true,
+        "final_verdict": "Divergent-Resolved-Trust",
+        "confidence": "Medium",
+        "final_reasoning": "The 45-point divergence between the two models is driven primarily by the burst pattern (19 transactions within a 3600-second window), which Model A treats as a significant risk signal while Model B discounts it in favor of the clean counterparty record. Resolving this conflict on the actual evidence: the burst pattern alone, absent any flagged counterparties, failed transactions, or suspicious funding sources, is insufficient to override the otherwise strong trust indicators. The wallet is 1,303 days old (well-established), has zero flagged counterparty or funding hits across 157 unique counterparties, a 0% failed transaction rate, and holds a meaningful ETH balance \u2014 all of which point toward organic, legitimate activity. A single burst window is consistent with normal user behavior (e.g., batch operations, DeFi interactions, or airdrop claims) and does not constitute negative evidence",
+        "data_sources": "blockscout-eth (module=account: txlist, tokentx, balance; Etherscan-compatible keyless public API; paginated history window: 3 txlist pages + 2 tokentx pages of 100, ascending); forta-network labelled-datasets Fake_Phishing snapshot (pinned): https://raw.githubusercontent.com/faisalnugroho/trustreconciler/53246b6bb348b41b4336657dd9ae1eaf8dfc43d5/data/phishing_labels.json",
+        "dataset_ref": "53246b6bb348:ee0076523ad355d5",
+        "history_coverage": "partial_window",
+        "last_updated": 1788602839,
+        "reevaluation_count": 1
+      }
+    },
+    "s2": {
+      "tx_hash": "0xb9e35df6017242544cbbfb7d828e1ef66e80c9caaea27c356cdc3bd16c31b769",
+      "wallet": "0xcF2Ae489e77945F34265FF57393831966E358Db0",
+      "chain": "eth",
+      "secs": 67.3,
+      "execution_result": "SUCCESS",
+      "stderr": "",
+      "record": {
+        "wallet_address": "0xcF2Ae489e77945F34265FF57393831966E358Db0",
+        "chain": "eth",
+        "requester": "0xa25f5a81Fb60b45207f2867346A8E0bAFaA2b836",
+        "requested_at": 1788602923,
+        "signal_a_score": 55,
+        "signal_a_reasoning": "wallet age 5 days < 30 \u2014 insufficient history",
+        "signal_b_score": 80,
+        "signal_b_reasoning": "zero contact with phishing-flagged addresses across all 6 counterparties; consistent history: only 0% failed txs",
+        "divergence_detected": true,
+        "final_verdict": "Divergent-Resolved-Trust",
+        "confidence": "Medium",
+        "final_reasoning": "The models diverge due to their conflicting interpretations of wallet_age_days (5 days), where Model A penalizes the lack of history while Model B rewards the clean record. The root cause is the tension between 'insufficient history' and 'zero negative indicators.' I favor Trust because the wallet exhibits organic activity\u2014maintaining a 75% counterparty diversity ratio and a 0% failure rate across both native and token transactions\u2014suggesting legitimate initial setup rather than bot-like or malicious behavior. As the data coverage is 'full_window,' this verdict is based on the address's complete life cycle to date.",
+        "data_sources": "blockscout-eth (module=account: txlist, tokentx, balance; Etherscan-compatible keyless public API; paginated history window: 3 txlist pages + 2 tokentx pages of 100, ascending); forta-network labelled-datasets Fake_Phishing snapshot (pinned): https://raw.githubusercontent.com/faisalnugroho/trustreconciler/53246b6bb348b41b4336657dd9ae1eaf8dfc43d5/data/phishing_labels.json",
+        "dataset_ref": "53246b6bb348:ee0076523ad355d5",
+        "history_coverage": "full_window",
+        "last_updated": 1788602923,
+        "reevaluation_count": 1
+      }
+    },
+    "s4_seed": {
+      "tx_hash": "0x2d8956516fe711bd296d0d8e21b33cd2e1bb20846cc6445eb9b732e266fd2ad9",
+      "wallet": "0x51FfD9b1F9c07286074e892d24AdFa7Ac44A33bF",
+      "chain": "base",
+      "secs": 85.9,
+      "execution_result": "SUCCESS",
+      "stderr": "/py/libs/genlayer/gl/_internal/storage.py:21: UserWarning: Detected pickling storage class. Reading storage in nondet mode is not supported\n  warnings.warn(\n",
+      "record": {
+        "wallet_address": "0x51FfD9b1F9c07286074e892d24AdFa7Ac44A33bF",
+        "chain": "base",
+        "requester": "0xa25f5a81Fb60b45207f2867346A8E0bAFaA2b836",
+        "requested_at": 1788602990,
+        "signal_a_score": -1,
+        "signal_a_reasoning": "not_computed_data_unavailable",
+        "signal_b_score": -1,
+        "signal_b_reasoning": "not_computed_data_unavailable",
+        "divergence_detected": false,
+        "final_verdict": "Undetermined",
+        "confidence": "Low",
+        "final_reasoning": "Fail-safe: reconciliation stopped before any LLM judgment because required data could not be retrieved: txlist:AssertionError('http_429'); tokentx:AssertionError('http_429'); balance:AssertionError('http_429'). This verdict asserts nothing about the wallet's trust or risk; re-run once the data source recovers. Note: the same 1-hour anti-spam cooldown applies to this Undetermined record \u2014 a failed run is a full consensus run, so it gets no bypass window.",
+        "data_sources": "data_unavailable",
+        "dataset_ref": "53246b6bb348:ee0076523ad355d5",
+        "history_coverage": "unavailable",
+        "last_updated": 1788602990,
+        "reevaluation_count": 1
+      }
+    },
+    "s4_flip": {
+      "tx_hash": "0x1fcb427d91e263e8de67d51a738bdee6c3058f578798ad16f9d55f44815431f7",
+      "wallet": "0x51FfD9b1F9c07286074e892d24AdFa7Ac44A33bF",
+      "chain": "eth",
+      "secs": 36.5,
+      "execution_result": "ERROR",
+      "stderr": "Traceback (most recent call last):\n  File \"/py/libs/_genlayer_runner.py\", line 180, in <module>\n    _handle_main()\n    ~~~~~~~~~~~~~^^\n  File \"/py/libs/_genlayer_runner.py\", line 170, in _handle_main\n    _give_result(\n    ~~~~~~~~~~~~^\n\tlambda: meth2call(contract_instance, *cd.get('args', []), **cd.get('kwargs', {}))\n     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n    )\n    ^\n  File \"/py/libs/_genlayer_runner.py\", line 65, in _give_result\n    res = res_fn()\n  File \"/py/libs/_genlayer_runner.py\", line 171, in <lambda>\n    lambda: meth2call(contract_instance, *cd.get('args', []), **cd.get('kwargs', {}))\n            ~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/contract.py\", line 920, in request_reevaluation\n    raise AssertionError(\"chain_mismatch:pinned_to:\" + prev.chain)\nAssertionError: chain_mismatch:pinned_to:base",
+      "chain_mismatch_reverted": true,
+      "stderr_note": "full leader stderr re-fetched from studionet RPC (eth_getTransactionByHash) on round-3 follow-up: original log stored a [:400] prefix that cut the final AssertionError line; revert WAS present, MAJORITY_AGREE (5 validators agree)"
+    },
+    "sw": {
+      "tx_hash": "0xefc1f79e5bec921d3bea68194c2034e1876fe42c4bb478b532c94121458bd5a4",
+      "wallet": "0xEF6FD3e9E3E86f2a576E3Fd8Ee872cf1AeEa2E06",
+      "chain": "eth",
+      "secs": 66.0,
+      "execution_result": "SUCCESS",
+      "stderr": "/py/libs/genlayer/gl/_internal/storage.py:21: UserWarning: Detected pickling storage class. Reading storage in nondet mode is not supported\n  warnings.warn(\n",
+      "record": {
+        "wallet_address": "0xEF6FD3e9E3E86f2a576E3Fd8Ee872cf1AeEa2E06",
+        "chain": "eth",
+        "requester": "0xa25f5a81Fb60b45207f2867346A8E0bAFaA2b836",
+        "requested_at": 1788619495,
+        "signal_a_score": 60,
+        "signal_a_reasoning": "burst pattern: 13 txs within 3600s; low counterparty diversity: 88 unique of 296 interactions \u2014 pass-through pattern",
+        "signal_b_score": 85,
+        "signal_b_reasoning": "zero contact with phishing-flagged addresses across all 88 counterparties; high counterparty diversity: 88 unique addresses; consistent history: only 0% failed txs",
+        "divergence_detected": true,
+        "final_verdict": "Divergent-Resolved-Trust",
+        "confidence": "Medium",
+        "final_reasoning": "Trust is the better fit because the root cause of the 45-point divergence is how the models interpret the same non-flagged but somewhat concentrated activity facts: 0 flagged counterparty hits, 0 flagged funding hits, 0% failed transactions, 424 days of history, and full-window coverage support benign behavior, while Model A treats the 29% counterparty diversity (88 unique of 296 interactions) and a burst of 13 transactions in an hour as pass-through risk by default. On this evidence, those pattern-based signals are weaker than the direct negative-evidence checks, and with full visible history showing no flagged contact, the wallet more reasonably resolves to Trust rather than Risk.",
+        "data_sources": "blockscout-eth (module=account: txlist, tokentx, balance; Etherscan-compatible keyless public API; paginated history window: 3 txlist pages + 2 tokentx pages of 100, ascending); forta-network labelled-datasets Fake_Phishing snapshot (pinned): https://raw.githubusercontent.com/faisalnugroho/trustreconciler/53246b6bb348b41b4336657dd9ae1eaf8dfc43d5/data/phishing_labels.json",
+        "dataset_ref": "53246b6bb348:ee0076523ad355d5",
+        "history_coverage": "full_window",
+        "last_updated": 1788619495,
+        "reevaluation_count": 1
+      },
+      "full_window": true
+    }
   }
 }

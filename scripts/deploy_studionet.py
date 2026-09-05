@@ -2,11 +2,13 @@
 """TrustReconciler — deploy to Studionet + live consensus smoke test.
 
 Smoke plan (spec section 6, wallets manually verified on eth.blockscout.com
-in the contract's exact fetch window — first-100 asc, txlist+tokentx):
+in the contract's exact PAGINATED fetch window — 3 txlist pages + 2
+tokentx pages of 100, ascending, sort=asc):
 
   S1 Aligned-Trustworthy: 0x930B88a592a045C428f3d99f7f3E5f95e3967508 (eth)
       verified window: 0 flagged hits, age ~1302d, 88 cps, 44% diversity,
       0% fails -> Signal A=15, B=85, gap=0 -> Aligned-Trustworthy.
+      (S1 has >=300 txs: partial_window under the new 300-tx window.)
   S2 Divergent (core value prop): 0xcF2Ae489e77945F34265FF57393831966E358Db0 (eth)
       verified window: 3d old, 6 cps, 0 flagged -> A=55, B=80, gap=35
       -> Divergent-Resolved-* with root-cause reasoning.

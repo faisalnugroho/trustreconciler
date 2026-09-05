@@ -82,11 +82,17 @@ Design hard lessons encoded (from prior submissions):
      pin) fails the run explicitly. Every stored record embeds
      dataset_ref = "<commit>:<keccak256[:16]>" so each verdict is
      auditable against the exact dataset bytes it judged with.
-  9. PARTIAL-HISTORY HONESTY (steward fix 4) — the txlist/tokentx fetch
-     is a bounded first-N ascending window on a public mirror whose
-     address-level coverage is incomplete. Both limitations are made
-     explicit IN THE DATA ITSELF, never left implicit: when the fetched
-     window is full (N=100 txs) or empty, the record carries
+  9. PAGINATED, BOUNDED HISTORY WINDOW (steward fix 5, extended) — the
+     txlist/tokentx fetch is a bounded FIRST-N ascending window over a
+     PAGINATED, keyless public API: fixed 3 pages x 100 native txs and
+     2 pages x 100 token transfers (300 + 200), fetched with the exact
+     same page plan by the leader and every validator (never
+     "until exhausted", which would make the window node-dependent and
+     break consensus determinism). The address-level coverage of the
+     mirror is incomplete, and wallets beyond the window are a bounded
+     sample. Both limitations are made explicit IN THE DATA ITSELF,
+     never left implicit: when the fetched window is full (300 native
+     or 200 token txs) or empty, the record carries
      history_coverage="partial_window" / "no_visible_history" and both
      the arbitration prompt and the stored signal reasoning state that
      the verdict is based on a LIMITED window, so it can never present
@@ -112,8 +118,32 @@ DIVERGENCE_THRESHOLD_POINTS = 30
 # a rounding difference and become materially different conclusions about
 # the same wallet — mirroring the motivating Trust-100 vs AML-MEDIUM case.
 
-MAX_TXS_FETCHED = 100       # fixed page size keeps leader/validator
-MAX_TOKEN_TXS_FETCHED = 100  # fetches comparable and the payload bounded
+# --------------------------------------------------------------------------- 
+# Paginated history window (steward fix 5, Sep 2026)
+# ---------------------------------------------------------------------------
+# The history fetch is PAGINATED over the Blockscout Etherscan-compatible
+# API (?page=N&offset=…). The page count is a FIXED constant: the leader
+# and EVERY validator always fetch exactly the same number of pages
+# (deterministic fetch plan), never "until exhausted" — a drain loop
+# would make the fetched window depend on transient network/timing
+# differences between nodes and break equivalence. Wallets whose full
+# history fits inside the window are covered completely; wallets beyond
+# it are honestly classified partial_window below.
+#
+# Bounds rationale (measured live on eth.blockscout.com, 2026-09-05):
+#   - a txlist page of 100 txs is ~100 KB — cheap, so 3 pages (300 txs)
+#     is still a bounded payload (~300 KB) well inside consensus budgets;
+#   - a tokentx page of 100 entries can reach ~7-10 MB (entries embed the
+#     full transaction `input` calldata), so the token window is capped
+#     at 2 pages (200 transfers) to keep the aggregate fetch inside the
+#     non-deterministic block's time budget on every validator.
+TXLIST_PAGE_SIZE = 100
+TXLIST_PAGES = 3       # 3 pages x 100 = 300 native txs
+TOKENTX_PAGE_SIZE = 100
+TOKENTX_PAGES = 2      # 2 pages x 100 = 200 token transfers
+
+MAX_TXS_FETCHED = TXLIST_PAGE_SIZE * TXLIST_PAGES    # 300 native txs
+MAX_TOKEN_TXS_FETCHED = TOKENTX_PAGE_SIZE * TOKENTX_PAGES  # 200 token txs
 
 WALLET_YOUNG_DAYS = 30      # Signal A: < 30 days = "insufficient history"
 BURST_WINDOW_SECONDS = 3600
@@ -425,14 +455,15 @@ def _detect_burst(timestamps) -> int:
 
 def _coverage_of(n_txs: int, n_ttxs: int) -> str:
     """Classify how much of the wallet's history the fetched window
-    actually covers (steward fix 4 — make the limitation explicit in
-    the stored data itself, never let a verdict imply full history).
-      full_window        — below the page cap: the window plausibly
-                           contains everything the mirror knows for the
-                           address.
-      partial_window     — the window is FULL (N=100): by construction
-                           this is a bounded sample, and for active
-                           wallets there is history beyond it.
+    actually covers (steward fixes 4+5 — make the limitation explicit
+    in the stored data itself, never let a verdict imply full history).
+      full_window        — below the paginated window cap (300 native /
+                           200 token txs): the window plausibly contains
+                           everything the mirror knows for the address.
+      partial_window     — the window is FULL (300 native or 200 token
+                           txs): by construction this is a bounded
+                           sample, and for active wallets there is
+                           history beyond it.
       no_visible_history — the mirror returned nothing for the address
                            (known Blockscout coverage gap): says NOTHING
                            about the wallet's true age or activity."""
@@ -535,8 +566,10 @@ def _compute_metrics(wallet_address: str, chain: str, txs, ttxs,
     # full-history knowledge when the window is bounded or empty.
     if history_coverage == "partial_window":
         a_reasons.append("LIMITED DATA: verdict based on the first "
-                         + str(MAX_TXS_FETCHED) + " txs only (partial "
-                         "history window, not the wallet's full record)")
+                         + str(MAX_TXS_FETCHED) + " native + "
+                         + str(MAX_TOKEN_TXS_FETCHED)
+                         + " token txs only (partial history window, "
+                         "not the wallet's full record)")
     elif history_coverage == "no_visible_history":
         a_reasons.append("LIMITED DATA: the data source returned no "
                          "visible history for this address (coverage "
@@ -575,7 +608,8 @@ def _compute_metrics(wallet_address: str, chain: str, txs, ttxs,
     if history_coverage == "partial_window":
         b_reasons.append("LIMITED DATA: zero flagged contact verified "
                          "within the first " + str(MAX_TXS_FETCHED)
-                         + "-tx window only, not the full history")
+                         + "-native-tx / " + str(MAX_TOKEN_TXS_FETCHED)
+                         + "-token-tx window only, not the full history")
     elif history_coverage == "no_visible_history":
         b_reasons.append("LIMITED DATA: no visible history in the data "
                          "source — trust here means 'nothing negative "
@@ -611,7 +645,9 @@ def _build_arbitration_prompt(wallet_address: str, chain: str, metrics,
         caveat = ("DATA WINDOW CAVEAT: the measured facts come from a "
                   "LIMITED window (first " + str(MAX_TXS_FETCHED)
                   + " native + " + str(MAX_TOKEN_TXS_FETCHED)
-                  + " token transfers, ascending). This is a bounded "
+                  + " token transfers, ascending, fetched as a fixed "
+                  + str(TXLIST_PAGES) + "+" + str(TOKENTX_PAGES)
+                  + "-page plan). This is a bounded "
                   "sample, NOT the wallet's full history. Your verdict "
                   "is about the evidence in this window only; if your "
                   "reasoning relies on completeness (e.g. 'no history' "
@@ -918,33 +954,58 @@ class TrustReconciler(gl.Contract):
                     raise AssertionError("malformed_payload")
                 return data
 
-            def _fetch_list(action: str, offset: int, what: str):
-                d = _get_json(base + "?module=account&action=" + action
-                             + "&address=" + wallet_address
-                             + "&page=1&offset=" + str(offset)
-                             + "&sort=asc")
-                if str(d.get("status")) != "1" and d.get("result") != []:
-                    raise AssertionError(what + "_status_"
-                                       + str(d.get("status")))
-                result = d.get("result")
-                if not isinstance(result, list):
-                    raise AssertionError(what + "_result_not_list")
-                for item in result:
-                    if not isinstance(item, dict):
-                        raise AssertionError(what + "_malformed_entry")
-                return result
+            def _fetch_pages(action: str, page_size: int, n_pages: int,
+                            what: str):
+                # PAGINATED FETCH (steward fix 5): fetch EXACTLY n_pages
+                # pages (fixed fetch plan — identical for the leader and
+                # every validator, never "until exhausted"). An empty
+                # page simply ends the wallet's visible history early:
+                # status "0" with result [] is the documented
+                # no-more-transactions response of the Etherscan-compatible
+                # API, tolerated identically by every node. Anything else
+                # (HTTP error, malformed payload, non-list result)
+                # fails the whole run via _get_json / the status check —
+                # the fail-safe never weakens with pagination.
+                pages = []
+                for page_no in range(1, n_pages + 1):
+                    d = _get_json(base + "?module=account&action=" + action
+                                 + "&address=" + wallet_address
+                                 + "&page=" + str(page_no)
+                                 + "&offset=" + str(page_size)
+                                 + "&sort=asc")
+                    if str(d.get("status")) != "1" and d.get("result") != []:
+                        raise AssertionError(what + "_page" + str(page_no)
+                                           + "_status_"
+                                           + str(d.get("status")))
+                    result = d.get("result")
+                    if not isinstance(result, list):
+                        raise AssertionError(what + "_page" + str(page_no)
+                                           + "_result_not_list")
+                    for item in result:
+                        if not isinstance(item, dict):
+                            raise AssertionError(what + "_page"
+                                               + str(page_no)
+                                               + "_malformed_entry")
+                    pages.extend(result)
+                    if len(result) < page_size:
+                        break     # last visible page — no more history
+                return pages
 
             # Step 1-3: txlist / tokentx / balance (Blockscout
             # Etherscan-compatible, keyless — see module docstring).
+            # The paginated window is 3 txlist pages + 2 tokentx pages
+            # (300 native + 200 token txs) — a FIXED page plan so every
+            # validator fetches the identical window.
             txs = None
             try:
-                txs = _fetch_list("txlist", MAX_TXS_FETCHED, "txlist")
+                txs = _fetch_pages("txlist", TXLIST_PAGE_SIZE,
+                                   TXLIST_PAGES, "txlist")
             except Exception as e:
                 failures.append("txlist:" + repr(e)[:60])
             ttxs = None
             try:
-                ttxs = _fetch_list("tokentx", MAX_TOKEN_TXS_FETCHED,
-                                   "tokentx")
+                ttxs = _fetch_pages("tokentx", TOKENTX_PAGE_SIZE,
+                                    TOKENTX_PAGES, "tokentx")
             except Exception as e:
                 failures.append("tokentx:" + repr(e)[:60])
             balance_wei = None
@@ -1092,7 +1153,10 @@ class TrustReconciler(gl.Contract):
 
         data_sources = ("blockscout-" + chain
                         + " (module=account: txlist, tokentx, balance; "
-                        "Etherscan-compatible keyless public API); "
+                        "Etherscan-compatible keyless public API; "
+                        "paginated history window: " + str(TXLIST_PAGES)
+                        + " txlist pages + " + str(TOKENTX_PAGES)
+                        + " tokentx pages of 100, ascending); "
                         "forta-network labelled-datasets Fake_Phishing "
                         "snapshot (pinned): " + self.dataset_url)
         return ReconciliationRecord(

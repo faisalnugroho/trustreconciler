@@ -90,12 +90,17 @@ class TestStewardFixFrontendChainDerivation:
         ) <= 2, "unexpected extra request_reevaluation references"
 
     def test_view_button_syncs_selector_to_pinned_chain(self):
-        # the read-only View stored record path syncs the selector to the
-        # record's pinned chain so the UI never contradicts the record
+        # the read-only View stored record path locks the selector to the
+        # record's pinned chain (round-3: lockChain hides the dropdown and
+        # shows the badge; sel.value is synced inside lockChain) so the UI
+        # never contradicts the record
         assert "btn-view" in HTML_READ
         assert re.search(
-            r"\$\('chain-select'\)\.value = recRaw\.chain", JS
-        ), "View stored record must sync the chain selector to the pinned chain"
+            r"lockChain\(recRaw\.chain\)", JS
+        ), "View stored record must LOCK the chain selector to the pinned chain"
+        assert re.search(
+            r"currentChain = recRaw\.chain", JS
+        ), "currentChain must be synced to the record's pinned chain"
 
 
 HTML_READ = HTML.read_text(encoding="utf-8")
@@ -149,10 +154,85 @@ class TestStewardFixFrontendVerifiedSuccess:
         assert m, "recovery loop must end by returning the receipt for caller-side verification"
 
 
+class TestStewardRound3FrontendChainLock:
+    """Round-3 fix 2: once a record is loaded, the chain selector is
+    VISUALLY replaced by a locked badge (pure UI — the round-2
+    record-derived re-eval chain logic is untouched)."""
+
+    def test_lock_badge_exists_in_markup(self):
+        assert 'id="chain-lock"' in HTML_READ
+        assert 'id="chain-lock-text"' in HTML_READ
+        assert "chain locked to: " in HTML_READ
+
+    def test_lockchain_and_unlockchain_defined(self):
+        assert re.search(r"function lockChain\(chain\)\{", JS)
+        assert re.search(r"function unlockChain\(\)\{", JS)
+        # lockChain hides the dropdown and shows the badge
+        m = re.search(r"function lockChain\(chain\)\{.*?\n\}", JS, re.S)
+        assert m, "lockChain body not found"
+        body = m.group(0)
+        assert "classList.add('hidden')" in body, \
+            "lockChain must HIDE the dropdown (not just disable it)"
+        assert "classList.add('show')" in body, \
+            "lockChain must SHOW the locked badge"
+        assert "chain locked to: ' + chain" in body
+
+    def test_record_render_locks_selector(self):
+        # renderRecord locks to the record's pinned chain whenever a
+        # record is displayed
+        assert re.search(r"if \(rec\.chain\) lockChain\(rec\.chain\);", JS), \
+            "renderRecord must lock the selector to the record's chain"
+
+    def test_empty_render_unlocks_selector(self):
+        # a 'No record yet' render re-activates the selector
+        m = re.search(r"if \(empty\)\{.*?return;", JS, re.S)
+        assert m and "unlockChain()" in m.group(0), \
+            "rendering an empty record must unlock the chain selector"
+
+    def test_input_change_reevaluates_lock(self):
+        # typing a DIFFERENT wallet re-activates the selector; the same
+        # wallet keeps the lock — selector active only for new wallets
+        assert re.search(
+            r"\$\('wallet-input'\)\.addEventListener\('input', syncChainLockUI\)",
+            JS), "input events must re-evaluate the chain lock state"
+
+    def test_reconcile_precheck_locks_to_pin(self):
+        # the doReconcile pre-check locks the selector to the wallet's
+        # pinned chain the moment a known record is detected — even if
+        # the run is then refused (cooldown) or the chain mismatches
+        assert re.search(r"lockChain\(existing\.chain\);", JS), \
+            "doReconcile must lock the selector when a pin is known"
+
+    def test_reeval_derivation_untouched(self):
+        # REGRESSION GUARD: the round-2 record-derived chain logic must
+        # remain exactly as it was — lockChain/syncChainLockUI may not
+        # be used inside doRecheck's send path
+        m = re.search(
+            r"async function doRecheck\(\)\{.*?(?=\$\('btn-reconcile'\))", JS, re.S)
+        assert m, "doRecheck function not found"
+        body = m.group(0)
+        assert "recChain" in body
+        assert "lockChain" not in body.split("sendWrite")[0], \
+            "doRecheck must not consult the lock UI before sending"
+        assert re.search(
+            r"sendWrite\(\s*['\"]request_reevaluation['\"]\s*,\s*\[currentWallet, recChain\]",
+            body), "re-eval must still send [currentWallet, recChain]"
+
+    def test_lock_is_pure_ui_no_send_path_uses_it(self):
+        # lockChain/unlockChain/syncChainLockUI never feed a transaction
+        for fn in ("sendWrite", "writeContract"):
+            for lockfn in ("lockChain", "unlockChain", "syncChainLockUI"):
+                for m in re.finditer(
+                        re.escape(fn) + r"\([^\)]*?\)", JS):
+                    assert lockfn not in m.group(0), \
+                        f"{fn} call must never reference {lockfn}"
+
+
 class TestStewardFixFrontendMisc:
     def test_html_parses_and_buttons_exist(self):
-        for btn in ("btn-reconcile", "btn-recheck", "btn-view", "chain-select"):
+        for btn in ("btn-reconcile", "btn-recheck", "btn-view", "chain-select",
+                    "chain-lock"):
             assert f'id="{btn}"' in HTML_READ, f"missing element #{btn}"
 
     def test_file_still_carries_contract_address(self):
-        assert "0x3c639D84c6B1463eaFE91EA0A2Db8d767e742c2B" in HTML_READ
+        assert "0xc88eCa8285929F25e231e0D2c78d1fDfC339EEaF" in HTML_READ

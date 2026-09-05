@@ -67,6 +67,18 @@ h1 .vs{font-style:italic;font-weight:300}
   font-family:'IBM Plex Mono',monospace;font-size:13px;padding:12px 10px;
   border:1.5px solid var(--line);border-radius:9px;background:var(--paper);color:var(--ink);
 }
+/* steward round-3 fix 2: when a record is loaded, the chain selector is
+   replaced by a locked badge — the dropdown is not merely disabled but
+   VISUALLY replaced, so the UI can never sit in a state that suggests
+   the chain is still changeable for a pinned wallet. */
+.chainlock{
+  display:none;align-items:center;gap:7px;
+  font-family:'IBM Plex Mono',monospace;font-size:12.5px;font-weight:500;
+  padding:12px 14px;border-radius:9px;border:1.5px dashed var(--gen);
+  background:var(--gen-bg);color:var(--gen);white-space:nowrap;
+}
+.chainlock.show{display:inline-flex}
+.chainlock .lock-emoji{font-size:14px;line-height:1}
 .btn{
   font-family:'Inter',sans-serif;font-weight:600;font-size:14.5px;
   padding:12px 22px;border-radius:9px;border:1.5px solid var(--gen);
@@ -202,6 +214,9 @@ footer .fl{font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.9}
         <option value="eth">eth (mainnet)</option>
         <option value="base">base</option>
       </select>
+      <span class="chainlock" id="chain-lock" title="This wallet's record is permanently pinned to this chain by its first reconciliation. Start a new reconciliation for a different wallet to change chains.">
+        <span class="lock-emoji">🔒</span><span id="chain-lock-text">chain locked to: eth</span>
+      </span>
       <button class="btn" id="btn-reconcile">Reconcile</button>
       <button class="btn ghost" id="btn-view" title="Read the stored on-chain record without sending a transaction">View stored record</button>
     </div>
@@ -271,7 +286,7 @@ footer .fl{font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.9}
       <b style="color:var(--ink)">Honest data note.</b> On-chain data is fetched by the contract from
       the keyless Blockscout Etherscan-compatible API; the Etherscan API key is used only by
       off-chain tooling (dataset sync, smoke tests) — never by the contract. Known limitations
-      (Blockscout address-history coverage, first-100-tx window, label snapshot) are documented in
+      (Blockscout address-history coverage, bounded 300+200-tx paginated window, label snapshot) are documented in
       the <a href="https://github.com/faisalnugroho/trustreconciler#known-limitations" target="_blank" rel="noopener">README</a>.
     </div>
     <div class="fl">
@@ -289,7 +304,7 @@ footer .fl{font-family:'IBM Plex Mono',monospace;font-size:12px;line-height:1.9}
 'use strict';
 
 /* ---------- config ---------- */
-const CONTRACT = '0x3c639D84c6B1463eaFE91EA0A2Db8d767e742c2B';
+const CONTRACT = '0xc88eCa8285929F25e231e0D2c78d1fDfC339EEaF';
 const EXPLORER_ADDR = 'https://explorer-studio.genlayer.com/address/';
 const EXPLORER_TX = 'https://explorer-studio.genlayer.com/tx/';
 const REEVAL_COOLDOWN_S = 3600; // must match contract constant (1 h anti-spam)
@@ -322,6 +337,46 @@ function loadInflight(){
 function clearInflight(){ try { localStorage.removeItem(IKEY); } catch {} }
 
 const $ = id => document.getElementById(id);
+
+/* ---------- chain selector lock (steward round-3 fix 2) ----------
+   PURE UI: once a record is loaded (fresh reconciliation or viewing an
+   existing one), the chain dropdown is hidden and replaced by a
+   "chain locked to: <chain>" badge — the display can never again sit
+   in a state that suggests the chain is still changeable for this
+   wallet. The selector re-activates only when the user moves to a
+   DIFFERENT wallet (new address in the input, or a new page state with
+   no record rendered).
+   This changes NOTHING about transaction logic: doRecheck still
+   derives the chain from the stored record (round-2 fix 1, untouched),
+   and doReconcile still sends the selector value for genuinely NEW
+   wallets only. */
+function lockChain(chain){
+  const sel = $('chain-select'), lock = $('chain-lock');
+  if (!sel || !lock) return;
+  sel.value = chain;                    // keep state in sync too
+  sel.classList.add('hidden');
+  lock.classList.add('show');
+  $('chain-lock-text').textContent = 'chain locked to: ' + chain;
+}
+function unlockChain(){
+  const sel = $('chain-select'), lock = $('chain-lock');
+  if (!sel || !lock) return;
+  lock.classList.remove('show');
+  sel.classList.remove('hidden');
+}
+function syncChainLockUI(){
+  // called on every input change: if the typed wallet differs from the
+  // loaded record's wallet, re-activate the selector (a NEW wallet /
+  // potentially unrecorded address may choose its chain); otherwise the
+  // lock stays on the record's chain.
+  const raw = $('wallet-input').value.trim().toLowerCase();
+  const w = raw ? normalizeAddress(raw) : null;
+  if (w && currentWallet && w.toLowerCase() === currentWallet.toLowerCase()){
+    lockChain(currentRecord && currentRecord.chain ? currentRecord.chain : $('chain-select').value);
+  } else {
+    unlockChain();
+  }
+}
 
 function toast(msg, isErr){
   const t = $('toast');
@@ -534,6 +589,7 @@ function renderRecord(rec, wallet){
   $('results').classList.remove('hidden');
 
   if (empty){
+    unlockChain();                     // no record -> selector free
     $('score-a').textContent = '—'; $('score-b').textContent = '—';
     $('reason-a').textContent = ''; $('reason-b').textContent = '';
     $('diverge-note').classList.add('hidden');
@@ -568,11 +624,11 @@ function renderRecord(rec, wallet){
   $('v-word').textContent = rec.final_verdict;
   $('v-conf').textContent = 'confidence: ' + (rec.confidence || '—');
   // Coverage honesty (steward fix 4): show whether the verdict rests on
-  // the full visible window, a bounded first-100 sample, or nothing
-  // visible at all — never let the UI imply full-history analysis.
+  // the full visible window, a bounded sample, or nothing visible at
+  // all — never let the UI imply full-history analysis.
   const covTxt = {
     full_window: 'full visible window',
-    partial_window: 'partial window (first 100 txs)',
+    partial_window: 'partial window (first 300 native / 200 token txs)',
     no_visible_history: 'no visible history (coverage gap)',
     unavailable: 'unavailable (fetch failed)'
   };
@@ -587,6 +643,9 @@ function renderRecord(rec, wallet){
     '<span class="src">evidence: ' + esc(rec.data_sources || 'on-chain fetches') + '</span>';
 
   updateRecheckState(rec);
+  // steward round-3 fix 2: a loaded record LOCKS the chain selector to
+  // the record's pinned chain — the dropdown is replaced by the badge.
+  if (rec.chain) lockChain(rec.chain);
   $('results').scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
@@ -633,8 +692,11 @@ async function doReconcile(){
   try {
     const existing = parseJsonSafe(await readContract('get_cooldown_info', [w]));
     if (existing && existing.wallet_known && existing.chain){
+      // steward round-3 fix 2: the moment a known wallet's pin is read,
+      // the selector locks to the pinned chain (visual + state) — before
+      // any decision to send, and even when the run is refused below.
+      lockChain(existing.chain);
       if (chain !== existing.chain){
-        $('chain-select').value = existing.chain;
         return toast('This wallet is pinned to chain “' + existing.chain +
           '” by its first reconciliation — selector locked to it (re-evaluating on another chain is rejected by the contract)', true);
       }
@@ -793,9 +855,11 @@ $('btn-view').onclick = async () => {
       setStatus(null);
       return toast('No stored record for this wallet yet — press Reconcile first');
     }
-    // sync selector + currentChain to the record's PINNED chain
-    $('chain-select').value = recRaw.chain;
+    // sync selector + currentChain to the record's PINNED chain, and
+    // LOCK the selector (badge replaces the dropdown) while this
+    // record is displayed.
     currentChain = recRaw.chain;
+    lockChain(recRaw.chain);
     renderRecord(recRaw, w);
     setStatus(null);
     toast('Stored record: ' + recRaw.final_verdict + ' (chain ' + recRaw.chain + ', re-evals ' + (recRaw.reevaluation_count ?? 0) + ')');
@@ -806,10 +870,12 @@ $('btn-view').onclick = async () => {
   }
 };
 $('wallet-input').addEventListener('keydown', e => { if (e.key === 'Enter') doReconcile(); });
+$('wallet-input').addEventListener('input', syncChainLockUI);
 document.querySelectorAll('#hint-line button').forEach(b => {
   b.onclick = () => {
     $('wallet-input').value = b.dataset.w;
     $('chain-select').value = b.dataset.c;
+    syncChainLockUI();     // re-evaluate lock state for the new wallet
     doReconcile();
   };
 });
@@ -851,6 +917,7 @@ async function init(){
       if (w){
         $('wallet-input').value = w;
         if (inflight.chain) { $('chain-select').value = inflight.chain; currentChain = inflight.chain; }
+        syncChainLockUI();   // round-3: lock badge if this wallet already has a rendered record
         setStatus('busy', 'Restored after refresh: a ' + esc(inflight.phase || 'request') +
           ' for <b>' + shortAddr(w) + '</b> (chain ' + esc(inflight.chain || '—') +
           ') may still be running on chain. Nothing was lost — press <b>View stored record</b> to check its committed verdict.');

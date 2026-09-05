@@ -40,10 +40,11 @@ from helpers import (
     TEST_DATASET_COMMIT, TEST_DATASET_KECCAK, TEST_DATASET_REF,
     TEST_DATASET_URL,
     addr_str, iso_now, iso_in, set_time,
-    tx, ok_list, empty_list, ok_balance, dataset_payload,
+    tx, tokentx, ok_list, empty_list, ok_balance, dataset_payload,
     old_clean_wallet_txs, fresh_clean_wallet_txs,
-    flagged_funding_wallet_txs, busy_wallet_txs,
-    mock_web_ok, mock_llm_direction, mock_llm_divergent_root_cause,
+    flagged_funding_wallet_txs, busy_wallet_txs, window_wallet_txs,
+    mock_web_ok, mock_web_paginated, mock_web_paginated_explicit,
+    mock_llm_direction, mock_llm_divergent_root_cause,
     get_record, reconcile,
 )
 
@@ -67,19 +68,36 @@ def env(direct_vm):
     return direct_vm, contract
 
 
-def register_full_ok(vm, txs, ttxs=None, balance=10**18, dataset_body=None):
-    """Register the complete 4-fetch happy-path mock set.
+def register_full_ok(vm, txs, ttxs=None, balance=10**18, dataset_body=None,
+                     page_aware=False):
+    """Register the complete happy-path mock set for the PAGINATED
+    pipeline (steward fix 5).
 
     gltest web mocks are FIRST-MATCH-WINS: a dataset mock registered here
     is permanently shadowed by any later dataset mock. To poison ONLY the
     dataset (tests 5-7, 10), pass ``dataset_body`` — the bad payload is
     baked into THIS registration, so no shadowed mock situation can occur.
-    """
+
+    page_aware=False (default) registers the OLD catch-all pattern
+    ("action=txlist" matches every ?page=N URL): every page returns the
+    same body. Use this when a test only cares that SOME tx data arrives
+    (fail-safe tests, cooldown tests, happy-path verdicts where the
+    wallet's history fits one page). page_aware=True uses
+    mock_web_paginated to serve proper per-page slices (pagination
+    tests). NOTE: dataset_body poisoning is only supported in the
+    catch-all mode (first-match-wins: mock_web_paginated registers its
+    own dataset mock that would shadow a later one)."""
+    ttxs_list = ttxs if ttxs is not None else []
+    if page_aware:
+        assert dataset_body is None, \
+            "dataset poisoning not supported in page_aware mode"
+        mock_web_paginated(vm, txs, ttxs_list, balance=balance)
+        return
     vm.mock_web("module=account&action=txlist",
                 {"status": 200, "body": json.dumps(ok_list(txs))})
     vm.mock_web("module=account&action=tokentx",
                 {"status": 200,
-                 "body": json.dumps(ok_list(ttxs if ttxs is not None else []))})
+                 "body": json.dumps(ok_list(ttxs_list))})
     vm.mock_web("module=account&action=balance",
                 {"status": 200, "body": json.dumps(ok_balance(balance))})
     vm.mock_web(DATASET_MOCK_PATTERN,
@@ -779,6 +797,211 @@ class TestStewardFixDatasetPinning:
         assert rec["dataset_ref"] == TEST_DATASET_REF
 
 
+# --------------------------------------------------------------------------- 
+# Steward fix 5 (Sep 2026 round-3) — paginated history window
+# ---------------------------------------------------------------------------
+class TestStewardFixPaginatedWindow:
+    """Fix 5: the history fetch is PAGINATED (3 txlist pages + 2 tokentx
+    pages of 100, ascending) with a FIXED page plan fetched identically
+    by the leader and every validator; wallets between the old 100-tx
+    cap and the new 300-tx window must now classify full_window."""
+
+    def test_short_history_stops_drain_at_short_page(self, env):
+        """A wallet whose full history fits ONE page (old_clean_wallet,
+        54 txs) must be fetched with exactly ONE txlist page: pages 2-3
+        are registered to FAIL (HTTP 500) — the contract's short-page
+        break must stop the drain, so the run succeeds on page 1 alone
+        and never touches page 2."""
+        vm, c = env
+        txs = old_clean_wallet_txs(now_ts())
+        # page 1 only, via the explicit helper
+        mock_web_paginated_explicit(
+            vm,
+            tx_pages_bodies={1: json.dumps(ok_list(txs))},
+            ttx_pages_bodies={1: json.dumps(ok_list([]))})
+        # pages 2-3 txlist + page 2 tokentx: landmines — fetching any
+        # of them fails the run (proves the drain stopped at page 1)
+        for pat in ("module=account&action=txlist.*page=2&",
+                    "module=account&action=txlist.*page=3&",
+                    "module=account&action=tokentx.*page=2&"):
+            vm.mock_web(pat, {"status": 500, "body": "down"})
+        mock_llm_direction(vm, "Trust")
+        rec = reconcile(vm, c)
+        assert rec["final_verdict"] == "Aligned-Trustworthy"
+        assert rec["history_coverage"] == "full_window"
+
+    def test_wallet_over_100_under_300_now_full_window(self, env):
+        """THE steward-requested coverage evidence: a wallet with
+        100 < n_txs < 300 (previously truncated to a partial first-100
+        sample) is now fully covered inside the 3-page window and must
+        classify history_coverage='full_window'."""
+        vm, c = env
+        txs = window_wallet_txs(now_ts(), n=250)
+        register_full_ok(vm, txs, page_aware=True)
+        mock_llm_direction(vm, "Trust")
+        rec = reconcile(vm, c)
+        assert rec["history_coverage"] == "full_window", rec
+        assert "LIMITED DATA" not in rec["signal_a_reasoning"]
+        # all 250 txs made it through pagination: 20 cycled counterparties
+        # => metrics reflect the full window, not a 100-tx truncation
+        assert "no conservative risk factors" in rec["signal_a_reasoning"]
+
+    def test_wallet_exactly_300_is_partial_window(self, env):
+        """300 txs = the window is FULL (3 x 100 pages, no short page):
+        bounded sample, honestly classified partial_window."""
+        vm, c = env
+        register_full_ok(vm, busy_wallet_txs(now_ts(), 300), page_aware=True)
+        mock_llm_direction(
+            vm, "Trust",
+            reasoning=("Based on this partial window the wallet shows "
+                       "organic activity; the verdict rests on the "
+                       "first-300-tx sample, not full history."))
+        rec = reconcile(vm, c)
+        assert rec["history_coverage"] == "partial_window"
+
+    def test_wallet_over_300_still_partial_window(self, env):
+        """A wallet with MORE than 300 txs (pages 1-3 all full, history
+        continues beyond): still honestly partial_window."""
+        vm, c = env
+        register_full_ok(vm, busy_wallet_txs(now_ts(), 450), page_aware=True)
+        mock_llm_direction(
+            vm, "Trust",
+            reasoning=("Based on this partial window the wallet shows "
+                       "organic activity; the verdict rests on the "
+                       "first-300-tx sample, not full history."))
+        rec = reconcile(vm, c)
+        assert rec["history_coverage"] == "partial_window"
+
+    def test_fixed_page_plan_3_txlist_2_tokentx(self, env):
+        """The fetch plan is FIXED (3 txlist pages), not adaptive: mock
+        a wallet with EXACTLY 200 txs (pages 1-2 full, no short page)
+        where page 3 is an HTTP-500 landmine. A drain-until-exhausted
+        loop would stop after the full page 2 and succeed; the FIXED
+        plan fetches page 3 too, hits the 500, and the run fails
+        Undetermined naming txlist page=3 — proving leader and every
+        validator execute the identical 3-page plan."""
+        vm, c = env
+        txs = busy_wallet_txs(now_ts(), 200)     # exactly 2 full pages
+        mock_web_paginated_explicit(
+            vm,
+            tx_pages_bodies={
+                1: json.dumps(ok_list(txs[:100])),
+                2: json.dumps(ok_list(txs[100:])),
+                3: json.dumps({"status": 500, "message": "Something went"
+                               " wrong.", "result": None}),
+            },
+            ttx_pages_bodies={
+                1: json.dumps(ok_list([])),
+                2: json.dumps(empty_list()),
+            })
+        poison_llm(vm, "fixed-plan")
+        rec = reconcile(vm, c)
+        assert_undetermined(rec, "txlist")
+        # the failure must name the PAGE that failed — page 3 of the
+        # fixed plan (and never pages 1-2, which served valid data)
+        assert "page3" in rec["final_reasoning"], rec["final_reasoning"]
+
+    def test_tokentx_fixed_plan_2_pages(self, env):
+        """Same proof for the tokentx side: exactly 100 token transfers
+        (page 1 full, no short page) with page 2 an HTTP-500 landmine —
+        the FIXED 2-page plan fetches page 2, hits the 500, and the run
+        fails Undetermined naming tokentx page=2."""
+        vm, c = env
+        ttxs = [tokentx(COUNTERPARTY_1, TARGET_WALLET.lower(),
+                        now_ts() - 30 * 86400) for _ in range(100)]
+        mock_web_paginated_explicit(
+            vm,
+            tx_pages_bodies={
+                1: json.dumps(ok_list(old_clean_wallet_txs(now_ts()))),
+                2: json.dumps(empty_list()),
+                3: json.dumps(empty_list()),
+            },
+            ttx_pages_bodies={
+                1: json.dumps(ok_list(ttxs)),
+                2: json.dumps({"status": 500, "message": "Something went"
+                               " wrong.", "result": None}),
+            })
+        poison_llm(vm, "ttx-fixed-plan")
+        rec = reconcile(vm, c)
+        assert_undetermined(rec, "tokentx")
+        assert "page2" in rec["final_reasoning"], rec["final_reasoning"]
+
+    def test_empty_beyond_last_page_is_not_a_failure(self, env):
+        """The real-world no-more-transactions response
+        (status "0", result []) on a beyond-last page must NOT fail the
+        run — it simply ends the history early (matches the live
+        eth.blockscout behavior verified 2026-09-05)."""
+        vm, c = env
+        txs = window_wallet_txs(now_ts(), n=150)   # 1 full + 1 half page
+        mock_web_paginated_explicit(
+            vm,
+            tx_pages_bodies={
+                1: json.dumps(ok_list(txs[:100])),
+                2: json.dumps(ok_list(txs[100:])),        # 50 txs, short
+                3: json.dumps(empty_list()),              # status "0", []
+            },
+            ttx_pages_bodies={
+                1: json.dumps(ok_list([])),
+                2: json.dumps(empty_list()),
+            })
+        mock_llm_direction(vm, "Trust")
+        rec = reconcile(vm, c)
+        assert rec["final_verdict"] == "Aligned-Trustworthy"
+        assert rec["history_coverage"] == "full_window"
+
+    def test_page2_http_failure_fails_safe(self, env):
+        """A mid-window HTTP failure (page 2 of 3 serves a genuine
+        HTTP 500, like the live base.blockscout incident) fails the
+        WHOLE run Undetermined BEFORE any LLM judgment — pagination
+        never weakens the fail-safe."""
+        vm, c = env
+        txs = busy_wallet_txs(now_ts(), 200)
+        # pages 1 and 3 serve valid data via the explicit helper
+        mock_web_paginated_explicit(
+            vm,
+            tx_pages_bodies={
+                1: json.dumps(ok_list(txs[:100])),
+                3: json.dumps(empty_list()),
+            },
+            ttx_pages_bodies={
+                1: json.dumps(ok_list([])),
+                2: json.dumps(empty_list()),
+            })
+        # page 2: genuine HTTP 500 (transport-level), the live S3 shape
+        vm.mock_web("module=account&action=txlist.*page=2&",
+                    {"status": 500, "body": "down"})
+        poison_llm(vm, "page2-500")
+        rec = reconcile(vm, c)
+        assert_undetermined(rec, "txlist")
+        assert "http_500" in rec["final_reasoning"]
+
+    def test_data_sources_name_the_window(self, env):
+        """The stored record's data_sources field explicitly documents
+        the paginated window (3+2 pages of 100)."""
+        vm, c = env
+        register_full_ok(vm, old_clean_wallet_txs(now_ts()))
+        mock_llm_direction(vm, "Trust")
+        rec = reconcile(vm, c)
+        assert "paginated history window: 3 txlist pages + 2 tokentx pages" \
+            in rec["data_sources"]
+
+    def test_window_constants_are_sane(self, env):
+        """Static guard: the new window is exactly 300 native + 200
+        token txs (3 x 100 + 2 x 100), strictly larger than the old
+        first-100 window, and the page counts are the fixed plan."""
+        src = Path("contracts/TrustReconciler.py").read_text()
+        assert "TXLIST_PAGE_SIZE = 100" in src
+        assert "TXLIST_PAGES = 3" in src
+        assert "TOKENTX_PAGE_SIZE = 100" in src
+        assert "TOKENTX_PAGES = 2" in src
+        # the fetch call passes the page constants, not a raw "until
+        # exhausted" loop bound from the response
+        assert "_fetch_pages(\"txlist\", TXLIST_PAGE_SIZE," in src
+        assert "_fetch_pages(\"tokentx\", TOKENTX_PAGE_SIZE," in src
+        assert "MAX_TXS_FETCHED = TXLIST_PAGE_SIZE * TXLIST_PAGES" in src
+        assert "MAX_TOKEN_TXS_FETCHED = TOKENTX_PAGE_SIZE * TOKENTX_PAGES" in src
+
+
 class TestStewardFixPartialHistoryHonesty:
     """Fix 4b: fetched-window limitations are explicit in the stored
     record, signal reasoning, prompt, and arbiter output."""
@@ -792,12 +1015,14 @@ class TestStewardFixPartialHistoryHonesty:
 
     def test_full_page_cap_forces_partial_window(self, env):
         vm, c = env
-        register_full_ok(vm, busy_wallet_txs(now_ts(), 100))
+        # 300 txs exactly = the full 3-page window: classified partial
+        # (bounded sample), LIMITED DATA clauses present.
+        register_full_ok(vm, busy_wallet_txs(now_ts(), 300), page_aware=True)
         mock_llm_direction(
             vm, "Trust",
             reasoning=("Based on this partial window the wallet shows "
                        "organic, non-flagged activity; the verdict rests "
-                       "on the first-100-tx sample, not full history."))
+                       "on the first-300-tx sample, not full history."))
         rec = reconcile(vm, c)
         assert rec["history_coverage"] == "partial_window"
         assert "LIMITED DATA" in rec["signal_a_reasoning"]
@@ -820,7 +1045,7 @@ class TestStewardFixPartialHistoryHonesty:
 
     def test_partial_window_llm_must_acknowledge_limit(self, env):
         vm, c = env
-        register_full_ok(vm, busy_wallet_txs(now_ts(), 100))
+        register_full_ok(vm, busy_wallet_txs(now_ts(), 300), page_aware=True)
         # LLM tries to issue a full-history-sounding verdict without
         # acknowledging the partial window -> rejected, fail-safe.
         mock_llm_direction(

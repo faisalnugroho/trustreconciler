@@ -122,12 +122,19 @@ Local development uses a git-ignored `.env` file at the repo root (see
   partial data on partial windows (a full-history-sounding verdict on a
   bounded window is rejected → `Undetermined`). Smoke tests use wallets
   whose history was manually verified to be present on the same instance.
-- **First-100-transaction window:** the contract fetches the first 100
-  native + 100 token transfers (`sort=asc`) to keep validator fetches
-  comparable and payloads bounded. For very high-volume wallets this is a
-  sample, not the full history; signals are computed on that sample and
-  the record states the window size AND the machine-readable
-  `history_coverage` classification above.
+- **Bounded paginated history window (extended Sep 2026, steward fix 5):**
+  the contract fetches the first **300 native transactions (3 txlist
+  pages) + 200 token transfers (2 tokentx pages)** of 100 each
+  (`sort=asc`, ascending) — a FIXED page plan fetched identically by
+  the leader and every validator (never "until exhausted", which would
+  make the window node-dependent and break consensus determinism).
+  Wallets whose visible history fits inside this window are covered
+  completely; very high-volume wallets beyond it are a bounded sample,
+  now explicitly recorded per record (`history_coverage`). Bounds
+  rationale (measured live): a 100-tx txlist page is ~100 KB, while a
+  100-entry tokentx page can reach 7-10 MB (entries embed full calldata)
+  — the 3+2 page plan balances coverage against the non-deterministic
+  block's time budget on every validator.
 - **Phishing labels are a snapshot:** the Fake_Phishing set is synced
   periodically from the public forta-network labelled-datasets repository;
   addresses newly flagged after the last sync are unknown to the contract
@@ -137,6 +144,43 @@ Local development uses a git-ignored `.env` file at the repo root (see
   judged with via their stored `dataset_ref`.
 
 ## Steward review fixes (Sep 2026 — "Action needed" response)
+
+Round-3 items (two "Declined" feedback points, both fixed and proven
+live — see `docs/SUBMISSION_DRAFT.md` "Steward round-3 fixes"):
+
+7. **Evidence completeness beyond the first 100 txs (paginated
+   window).** The history fetch is now PAGINATED over the Blockscout
+   Etherscan-compatible API: a FIXED plan of **3 txlist pages + 2
+   tokentx pages** (100 per page, `sort=asc`) — 300 native + 200 token
+   txs. The page count is a constant, so the leader and every validator
+   execute the identical fetch plan (never "until exhausted", which
+   would make the window node-dependent and break equivalence); an
+   empty beyond-last page (the API's documented no-more-transactions
+   response) simply ends the history early without failing the run,
+   while any HTTP error on ANY page still fails the whole run
+   Undetermined before the LLM (fail-safe unchanged). `history_coverage`
+   semantics, all "LIMITED DATA" clauses, the arbitration-prompt caveat,
+   `data_sources`, and this README now state the 300+200 window
+   explicitly instead of "first 100". Bounds rationale is documented in
+   the contract source (measured page sizes: ~100 KB per txlist page vs
+   up to ~10 MB per tokentx page — the 3+2 plan balances coverage
+   against the non-deterministic block's time budget). Tests:
+   `TestStewardFixPaginatedWindow` (10 tests, incl. the steward-requested
+   coverage case: a wallet with 100 < txs < 300 now classifies
+   `full_window`, and HTTP-500 landmines on later pages prove the fixed
+   page plan is actually fetched).
+8. **Chain selector locked after a record is loaded (pure UX).** Once a
+   record is displayed — fresh reconciliation, opening an existing one,
+   or the Reconcile pre-check detecting a pinned wallet — the chain
+   dropdown is VISUALLY REPLACED by a "🔒 chain locked to: <chain>"
+   badge. The selector only re-activates when the user moves to a
+   different wallet address (typing fires `syncChainLockUI`). This is a
+   display-only change: the transaction logic is untouched — re-eval
+   still derives the chain from the stored record (round-2 fix 1, with
+   a regression test asserting `doRecheck`'s send path never consults
+   the lock UI), and genuinely NEW wallets still pick their chain
+   normally. Verified live with screenshots (badge replaces dropdown on
+   record load; selector returns for a different address).
 
 Adversarial QA round-3 (7 production scenarios executed against the live
 dApp — double-click races, mid-consensus refresh, signer switches, chain
