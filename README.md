@@ -91,6 +91,17 @@ Local development uses a git-ignored `.env` file at the repo root (see
 
 ## Known limitations
 
+- **In-flight UI state across refresh (fixed Sep 2026, QA round-3):** an
+  accidental refresh used to wipe the address being processed, forcing a
+  retype. The address + chain of a pending request are now mirrored to
+  `localStorage` (`trustreconciler_inflight`, 30-min expiry) and restored
+  on load with a status note pointing at **View stored record** — the
+  consensus itself always kept running on chain either way. No
+  transaction is ever auto-sent on load, and the before/after mutation
+  verification flow is untouched. What is still NOT persisted: the
+  live countdown/status strip of the in-flight tx (the tx hash is only
+  recoverable from the explorer or after the record commits).
+
 - **Blockscout address-history coverage (verified live 2026-09-03):** the
   public `eth.blockscout.com` instance used by the contract does not return
   full address history for every wallet. Several long-established addresses
@@ -126,6 +137,28 @@ Local development uses a git-ignored `.env` file at the repo root (see
   judged with via their stored `dataset_ref`.
 
 ## Steward review fixes (Sep 2026 — "Action needed" response)
+
+Adversarial QA round-3 (7 production scenarios executed against the live
+dApp — double-click races, mid-consensus refresh, signer switches, chain
+flips, lowercase/checksum duplicates, last-second cooldown boundary, RPC
+cuts mid-verification; all 7 PASS) surfaced two UI gaps, both fixed
+(commit `38f7275`) and re-verified live:
+
+5. **Reconcile now pre-checks the on-chain cooldown before sending.**
+   Previously, clicking Reconcile on a wallet with an existing record
+   still inside its 1-hour anti-spam window sent a transaction that was
+   guaranteed to revert (`cooldown_active`) — a wasted consensus round.
+   The dApp now reads `get_cooldown_info` first (the same call it already
+   made for chain-pin locking) and refuses at the UI level: no tx is
+   sent, the existing record is rendered with its countdown, and the
+   message states exactly when re-evaluation unlocks. Verified live: 0
+   `eth_sendRawTransaction` for an in-cooldown wallet (previously 1
+   guaranteed revert per click). The contract guard is unchanged and
+   remains the source of truth.
+6. **In-flight address persists across refresh.** See Known limitations
+   above for scope. Verified live: after F5 mid-consensus, the input is
+   re-filled, a restoration note is shown, zero txs are sent by the
+   reload, and the record commits + renders normally afterwards.
 
 Four issues raised by the Builder Portal steward review, all fixed with
 regression tests (direct-mode suite: 60/60):
