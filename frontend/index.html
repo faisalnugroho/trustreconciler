@@ -303,6 +303,24 @@ let currentRecord = null;   // last rendered record
 let currentWallet = '';     // wallet of last rendered record
 let currentChain = 'eth';
 
+/* In-flight persistence (QA round-3 fix): the address being processed is
+   mirrored to localStorage while a request is pending, so an accidental
+   refresh does not wipe the input. Cleared on any settle (success, error,
+   or view). Never stores records — only {addr, chain, phase}. */
+const IKEY = 'trustreconciler_inflight';
+function saveInflight(addr, chain, phase){
+  try { localStorage.setItem(IKEY, JSON.stringify({ addr, chain, phase, t: Date.now() })); } catch {}
+}
+function loadInflight(){
+  try {
+    const o = JSON.parse(localStorage.getItem(IKEY) || 'null');
+    if (!o || !o.addr) return null;
+    if (Date.now() - (o.t || 0) > 30 * 60 * 1000) { localStorage.removeItem(IKEY); return null; }  // stale after 30 min
+    return o;
+  } catch { return null; }
+}
+function clearInflight(){ try { localStorage.removeItem(IKEY); } catch {} }
+
 const $ = id => document.getElementById(id);
 
 function toast(msg, isErr){
@@ -620,10 +638,27 @@ async function doReconcile(){
         return toast('This wallet is pinned to chain “' + existing.chain +
           '” by its first reconciliation — selector locked to it (re-evaluating on another chain is rejected by the contract)', true);
       }
+      // Pre-check cooldown (QA round-3 fix): a known wallet inside its
+      // anti-spam window would burn a consensus round only for the
+      // contract to revert with cooldown_active. Refuse at the UI level,
+      // show the existing record + countdown, send nothing.
+      const lu = Number(existing.last_updated || 0);
+      const elapsed = (Date.now() / 1000) - lu;
+      if (lu && elapsed < REEVAL_COOLDOWN_S){
+        try {
+          const recRaw = parseJsonSafe(await readContract('get_reconciliation', [w]));
+          if (recRaw && recRaw.final_verdict) renderRecord(recRaw, w);
+        } catch {}
+        const mins = Math.ceil((REEVAL_COOLDOWN_S - elapsed) / 60);
+        return setStatus('err', 'This wallet was reconciled ' + Math.max(1, Math.round(elapsed / 60)) +
+          ' min ago — re-evaluation is blocked by the on-chain cooldown for ~' + mins +
+          ' more min (anti-spam). No transaction was sent. Use <b>View stored record</b> anytime; <b>Re-check</b> unlocks automatically after the cooldown.');
+      }
     }
   } catch { /* cooldown-info read is best-effort; the contract enforces the real guard */ }
   busy = true;
   $('btn-reconcile').disabled = true;
+  saveInflight(w, chain, 'reconcile');
   try {
     setStatus('busy', 'Requesting reconciliation — consensus run in progress (fetch on-chain data → signals → LLM arbiter)…');
     const { txHash } = await sendWrite('request_reconciliation', [w, chain], 'reconcile');
@@ -633,6 +668,7 @@ async function doReconcile(){
     if (!rec || !rec.final_verdict) throw new Error('Record not found after tx — tx <a href="' + EXPLORER_TX + txHash + '">…</a> may have reverted');
     renderRecord(rec, w);
     setStatus(null);
+    clearInflight();
     toast('Verdict: ' + rec.final_verdict);
   } catch (e){
     const msg = String(e.message || e);
@@ -644,12 +680,14 @@ async function doReconcile(){
         if (rec && rec.final_verdict){
           renderRecord(rec, w);
           setStatus(null);
+          clearInflight();
           toast('This wallet was reconciled recently — showing the existing on-chain record (re-check opens after cooldown)');
           return;
         }
       } catch {}
     }
     setStatus('err', 'Reconcile failed: ' + esc(msg));
+    clearInflight();
   } finally {
     busy = false;
     $('btn-reconcile').disabled = false;
@@ -802,6 +840,23 @@ async function init(){
     const ai = parseInt(localStorage.getItem(WKEY + '_active') || '-1');
     if (ai >= 0 && ai < wallets.length){ activeIdx = ai; renderWallets(); }
   } catch {}
+  // QA round-3 fix: recover an interrupted in-flight request after refresh.
+  // The consensus keeps running on chain regardless; we only restore the
+  // typed address + chain so the user does not retype from zero, and say
+  // plainly what to do (View). No automatic tx is ever sent on load.
+  const inflight = loadInflight();
+  if (inflight){
+    try {
+      const w = normalizeAddress(inflight.addr);
+      if (w){
+        $('wallet-input').value = w;
+        if (inflight.chain) { $('chain-select').value = inflight.chain; currentChain = inflight.chain; }
+        setStatus('busy', 'Restored after refresh: a ' + esc(inflight.phase || 'request') +
+          ' for <b>' + shortAddr(w) + '</b> (chain ' + esc(inflight.chain || '—') +
+          ') may still be running on chain. Nothing was lost — press <b>View stored record</b> to check its committed verdict.');
+      }
+    } catch {}
+  }
 }
 init();
 </script>
